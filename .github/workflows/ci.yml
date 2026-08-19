@@ -36,11 +36,11 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}
           "$(go env GOPATH)/bin/wails3" generate bindings -ts -i -clean=true
-      - name: Test Go
-        run: go test ./...
       - name: Typecheck frontend
         working-directory: frontend
         run: npm run typecheck
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+      - name: Test Go
+        run: go test ./...
