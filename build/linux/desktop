@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=LocalTodo
+Comment=Local-first desktop task manager
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/localtodo %u
+Terminal=false
+Type=Application
+Icon=localtodo
+Categories=Utility;
+StartupWMClass=localtodo
+
+ 

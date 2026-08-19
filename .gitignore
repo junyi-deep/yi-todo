@@ -1,0 +1,10 @@
+.task/
+bin/
+frontend/bindings/
+frontend/dist/*
+!frontend/dist/.keep
+frontend/node_modules/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

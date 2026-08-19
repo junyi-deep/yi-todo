@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.0.1"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.0.1",
+			"CompanyName": "LocalTodo",
+			"FileDescription": "Local-first desktop task manager",
+			"LegalCopyright": "Copyright 2026 LocalTodo",
+			"ProductName": "LocalTodo",
+			"Comments": "LocalTodo desktop application"
+		}
+	}
+}
