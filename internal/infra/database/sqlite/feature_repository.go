@@ -27,10 +27,6 @@ func (r *FeatureRepository) UpdateDescription(ctx context.Context, id, format, s
 	return NewTaskRepository(r.db).Get(ctx, id)
 }
 
-func (r *FeatureRepository) CreateChild(ctx context.Context, task domain.Task) (domain.Task, error) {
-	return NewTaskRepository(r.db).Create(ctx, task)
-}
-
 func (r *FeatureRepository) ListChildren(ctx context.Context, parentID string) ([]domain.Task, error) {
 	rows, err := r.db.QueryContext(ctx, taskSelect+` WHERE parent_id=? AND deleted_at IS NULL ORDER BY sort_order, created_at`, parentID)
 	if err != nil {
@@ -48,21 +44,21 @@ func (r *FeatureRepository) ListChildren(ctx context.Context, parentID string) (
 	return result, rows.Err()
 }
 
+func (r *FeatureRepository) ChildCounts(ctx context.Context, ids []string) (map[string]int, error) {
+	return childCounts(ctx, r.db, ids)
+}
+
 func (r *FeatureRepository) Search(ctx context.Context, query repository.SearchQuery) ([]domain.SearchResult, error) {
 	statement := `SELECT DISTINCT t.id,t.title,t.description_plain,p.name,t.due_at FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.deleted_at IS NULL`
 	args := make([]any, 0, 12)
 	if query.Keyword != "" {
 		like := "%" + strings.Trim(query.Keyword, `"*`) + "%"
-		statement += ` AND (t.id IN (SELECT task_id FROM task_fts WHERE task_fts MATCH ?) OR p.name LIKE ? OR EXISTS(SELECT 1 FROM task_tags tt JOIN tags tag ON tag.id=tt.tag_id WHERE tt.task_id=t.id AND tag.name LIKE ?))`
-		args = append(args, query.Keyword, like, like)
+		statement += ` AND (t.id IN (SELECT task_id FROM task_fts WHERE task_fts MATCH ?) OR p.name LIKE ?)`
+		args = append(args, query.Keyword, like)
 	}
 	if query.Project != "" {
 		statement += ` AND (p.id=? OR p.name LIKE ?)`
 		args = append(args, query.Project, "%"+query.Project+"%")
-	}
-	for _, tag := range query.Tags {
-		statement += ` AND EXISTS(SELECT 1 FROM task_tags tt JOIN tags ttag ON ttag.id=tt.tag_id WHERE tt.task_id=t.id AND (ttag.id=? OR ttag.name LIKE ?))`
-		args = append(args, tag, "%"+tag+"%")
 	}
 	if query.Status != "" {
 		statement += ` AND t.status=?`
@@ -171,13 +167,20 @@ func (r *FeatureRepository) GetAttachment(ctx context.Context, id string) (domai
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	return item, nil
 }
+func (r *FeatureRepository) DeleteAttachment(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM attachments WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, id)
+}
 
 func (r *FeatureRepository) CreateReminder(ctx context.Context, item domain.Reminder) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO reminders(id,task_id,remind_at,status,created_at) VALUES(?,?,?,?,?)`, item.ID, item.TaskID, formatTime(item.RemindAt), item.Status, formatTime(item.CreatedAt))
+	_, err := r.db.ExecContext(ctx, `INSERT INTO reminders(id,task_id,remind_at,status,repeat_type,repeat_value,created_at) VALUES(?,?,?,?,?,?,?)`, item.ID, item.TaskID, formatTime(item.RemindAt), item.Status, item.RepeatType, nullableInt(item.RepeatValue), formatTime(item.CreatedAt))
 	return err
 }
 func (r *FeatureRepository) ListReminders(ctx context.Context, taskID string) ([]domain.Reminder, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,task_id,remind_at,status,fired_at,created_at FROM reminders WHERE task_id=? ORDER BY remind_at`, taskID)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,task_id,remind_at,status,fired_at,repeat_type,repeat_value,created_at FROM reminders WHERE task_id=? ORDER BY remind_at`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -187,23 +190,29 @@ func (r *FeatureRepository) ListReminders(ctx context.Context, taskID string) ([
 		var x domain.Reminder
 		var remind, created string
 		var fired sql.NullString
-		if err := rows.Scan(&x.ID, &x.TaskID, &remind, &x.Status, &fired, &created); err != nil {
+		var repeatValue sql.NullInt64
+		if err := rows.Scan(&x.ID, &x.TaskID, &remind, &x.Status, &fired, &x.RepeatType, &repeatValue, &created); err != nil {
 			return nil, err
 		}
 		x.RemindAt, _ = time.Parse(time.RFC3339Nano, remind)
 		x.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		x.FiredAt, _ = parseNullableTime(fired)
+		if repeatValue.Valid {
+			value := int(repeatValue.Int64)
+			x.RepeatValue = &value
+		}
 		items = append(items, x)
 	}
 	return items, rows.Err()
 }
 
 func (r *FeatureRepository) GetNextReminder(ctx context.Context) (*domain.Reminder, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT id,task_id,remind_at,status,fired_at,created_at FROM reminders WHERE status='pending' ORDER BY remind_at LIMIT 1`)
+	row := r.db.QueryRowContext(ctx, `SELECT id,task_id,remind_at,status,fired_at,repeat_type,repeat_value,created_at FROM reminders WHERE status='pending' ORDER BY remind_at LIMIT 1`)
 	var item domain.Reminder
 	var remindAt, createdAt string
 	var firedAt sql.NullString
-	if err := row.Scan(&item.ID, &item.TaskID, &remindAt, &item.Status, &firedAt, &createdAt); errors.Is(err, sql.ErrNoRows) {
+	var repeatValue sql.NullInt64
+	if err := row.Scan(&item.ID, &item.TaskID, &remindAt, &item.Status, &firedAt, &item.RepeatType, &repeatValue, &createdAt); errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -211,7 +220,19 @@ func (r *FeatureRepository) GetNextReminder(ctx context.Context) (*domain.Remind
 	item.RemindAt, _ = time.Parse(time.RFC3339Nano, remindAt)
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	item.FiredAt, _ = parseNullableTime(firedAt)
+	if repeatValue.Valid {
+		value := int(repeatValue.Int64)
+		item.RepeatValue = &value
+	}
 	return &item, nil
+}
+func (r *FeatureRepository) RescheduleReminder(ctx context.Context, id string, next time.Time) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE reminders SET remind_at=?,fired_at=NULL,status='pending' WHERE id=?`, formatTime(next), id)
+	return err
+}
+func (r *FeatureRepository) DeleteReminder(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM reminders WHERE id=?`, id)
+	return err
 }
 
 func (r *FeatureRepository) MarkReminderFired(ctx context.Context, id string, at time.Time) error {
@@ -275,7 +296,7 @@ func (r *FeatureRepository) GetStats(ctx context.Context, from, to time.Time) (d
 		trend = append(trend, p)
 	}
 	rows.Close()
-	rows, err = r.db.QueryContext(ctx, `SELECT COALESCE(p.name,'收件箱'),COUNT(*) FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.deleted_at IS NULL GROUP BY p.id ORDER BY COUNT(*) DESC`)
+	rows, err = r.db.QueryContext(ctx, `SELECT COALESCE(p.name,'收集箱'),COUNT(*) FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.deleted_at IS NULL GROUP BY p.id ORDER BY COUNT(*) DESC`)
 	if err != nil {
 		return o, trend, nil, err
 	}
@@ -287,6 +308,39 @@ func (r *FeatureRepository) GetStats(ctx context.Context, from, to time.Time) (d
 		projects = append(projects, p)
 	}
 	return o, trend, projects, rows.Err()
+}
+
+func (r *FeatureRepository) GetFocusStats(ctx context.Context, from, to time.Time) ([]domain.FocusDay, []domain.TaskFocusStat, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT strftime('%Y-%m-%d',ended_at,'localtime'),COALESCE(SUM(elapsed_seconds)/60,0),COUNT(*) FROM pomodoro_sessions WHERE state='completed' AND ended_at>=? AND ended_at<? GROUP BY 1 ORDER BY 1`, formatTime(from), formatTime(to))
+	if err != nil {
+		return nil, nil, err
+	}
+	var days []domain.FocusDay
+	for rows.Next() {
+		var x domain.FocusDay
+		if err := rows.Scan(&x.Date, &x.Minutes, &x.Count); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		days = append(days, x)
+	}
+	rows.Close()
+	rows, err = r.db.QueryContext(ctx, `SELECT p.task_id,COALESCE(t.title,'未关联任务'),COALESCE(SUM(p.elapsed_seconds)/60,0),COUNT(*) FROM pomodoro_sessions p LEFT JOIN tasks t ON t.id=p.task_id WHERE p.state='completed' AND p.ended_at>=? AND p.ended_at<? GROUP BY p.task_id,t.title ORDER BY COUNT(*) DESC`, formatTime(from), formatTime(to))
+	if err != nil {
+		return days, nil, err
+	}
+	defer rows.Close()
+	var tasks []domain.TaskFocusStat
+	for rows.Next() {
+		var x domain.TaskFocusStat
+		var id sql.NullString
+		if err := rows.Scan(&id, &x.Title, &x.Minutes, &x.PomodoroCount); err != nil {
+			return days, nil, err
+		}
+		x.TaskID = stringPointer(id)
+		tasks = append(tasks, x)
+	}
+	return days, tasks, rows.Err()
 }
 
 func (r *FeatureRepository) GetSetting(ctx context.Context, key string) (string, error) {

@@ -26,12 +26,26 @@ type Dependency struct {
 }
 
 type Reminder struct {
-	ID        string     `json:"id"`
-	TaskID    string     `json:"taskId"`
-	RemindAt  time.Time  `json:"remindAt"`
-	Status    string     `json:"status"`
-	FiredAt   *time.Time `json:"firedAt"`
-	CreatedAt time.Time  `json:"createdAt"`
+	ID          string     `json:"id"`
+	TaskID      string     `json:"taskId"`
+	RemindAt    time.Time  `json:"remindAt"`
+	Status      string     `json:"status"`
+	FiredAt     *time.Time `json:"firedAt"`
+	RepeatType  string     `json:"repeatType"`
+	RepeatValue *int       `json:"repeatValue"`
+	CreatedAt   time.Time  `json:"createdAt"`
+}
+
+type FocusDay struct {
+	Date    string `json:"date"`
+	Minutes int    `json:"minutes"`
+	Count   int    `json:"count"`
+}
+type TaskFocusStat struct {
+	TaskID        *string `json:"taskId"`
+	Title         string  `json:"title"`
+	Minutes       int     `json:"minutes"`
+	PomodoroCount int     `json:"pomodoroCount"`
 }
 
 type PomodoroSession struct {

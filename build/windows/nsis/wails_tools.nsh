@@ -5,16 +5,16 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "localtodo"
+    !define INFO_PROJECTNAME "yi-todo"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "LocalTodo"
+    !define INFO_COMPANYNAME "yi-todo"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "LocalTodo"
+    !define INFO_PRODUCTNAME "yi-todo"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "0.0.1"
+    !define INFO_PRODUCTVERSION "0.0.2"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "© now, My Company"

@@ -1,4 +1,4 @@
-# LocalTodo 桌面任务管理软件设计文档
+# yi-todo 桌面任务管理软件设计文档
 
 > 用途：作为 Codex / AI 编码代理的项目级实现规范。  
 > 目标平台：macOS、Windows  
@@ -43,7 +43,7 @@
 
 # 1. 产品定位
 
-LocalTodo 是一个面向个人使用的高性能、本地优先桌面任务管理软件。
+yi-todo 是一个面向个人使用的高性能、本地优先桌面任务管理软件。
 
 产品定位接近：
 
@@ -239,7 +239,7 @@ Repository -> UI
 # 5. 推荐项目目录
 
 ```text
-localtodo/
+yi-todo/
 ├── main.go
 ├── go.mod
 ├── go.sum
@@ -1031,9 +1031,8 @@ Canonical source：
 附件目录：
 
 ```text
-<ApplicationData>/
-├── data/
-│   └── localtodo.db
+<ExecutableDirectory>/.yi-todo/
+├── yi-todo.db
 ├── attachments/
 │   ├── 2f/
 │   │   └── <uuid>.png
@@ -1429,7 +1428,7 @@ App 允许关闭主窗口但继续驻留。
 Tray：
 
 ```text
-LocalTodo
+yi-todo
 ────────────
 🍅 Focus 18:42
 Open
@@ -1620,8 +1619,7 @@ BackupService：
 CreateBackup()
 ListBackups()
 RestoreBackup()
-ExportData()
-ImportData()
+DeleteBackup()
 ```
 
 备份时考虑 WAL 一致性。
@@ -1633,24 +1631,10 @@ ImportData()
 默认：
 
 - 每日自动备份一次；
-- 保留最近 14~30 份；
+- 保留最近 10 份，创建备份后自动清理更早的文件；
 - 用户可关闭；
 - backup 中包含 DB；
 - attachments 可采用单独 export package，避免每天复制大量图片。
-
-V1 可先实现手动完整导出：
-
-```text
-.localtodo-backup
-```
-
-其内容可为 zip：
-
-```text
-database.sqlite
-attachments/
-manifest.json
-```
 
 Restore 前自动做一次当前数据 backup。
 
@@ -2133,15 +2117,13 @@ init paths
 
 # 52. App Data Directory
 
-使用系统规范的 App Data 路径。
-
-不要把 DB 存工作目录。
+固定使用可执行文件同级的 `.yi-todo` 目录；开发态不迁移旧路径数据。
 
 逻辑目录：
 
 ```text
-LocalTodo/
-├── data/
+<ExecutableDirectory>/.yi-todo/
+├── yi-todo.db
 ├── attachments/
 ├── backups/
 ├── logs/
@@ -2163,38 +2145,13 @@ type Paths struct {
 
 只有 `Paths` 负责路径生成。
 
-不要在 service 中到处拼 `%APPDATA%` 或 `~/Library/...`。
+不要在 service 中自行拼接数据路径。
 
 ---
 
 # 53. Import / Export
 
-V1：
-
-JSON export：
-
-```json
-{
-  "formatVersion": 1,
-  "exportedAt": "...",
-  "projects": [],
-  "tasks": [],
-  "tags": [],
-  "taskTags": [],
-  "dependencies": [],
-  "reminders": [],
-  "pomodoroSessions": []
-}
-```
-
-导入必须：
-
-- transaction；
-- validate formatVersion；
-- ID conflict 策略；
-- rollback on failure。
-
-不要覆盖现有数据库文件来实现 JSON import。
+当前阶段不提供 JSON 导入与导出。数据安全通过 SQLite 一致性备份、恢复和备份保留策略实现。
 
 ---
 

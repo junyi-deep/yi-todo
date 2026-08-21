@@ -1,15 +1,15 @@
 {
 	"fixed": {
-		"file_version": "0.0.1"
+		"file_version": "0.0.2"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "0.0.1",
-			"CompanyName": "LocalTodo",
+			"ProductVersion": "0.0.2",
+			"CompanyName": "yi-todo",
 			"FileDescription": "Local-first desktop task manager",
-			"LegalCopyright": "Copyright 2026 LocalTodo",
-			"ProductName": "LocalTodo",
-			"Comments": "LocalTodo desktop application"
+			"LegalCopyright": "Copyright 2026 yi-todo",
+			"ProductName": "yi-todo",
+			"Comments": "yi-todo desktop application"
 		}
 	}
 }

@@ -37,13 +37,13 @@ jobs:
       - name: Build Linux packages
         run: |
           "$(go env GOPATH)/bin/wails3" task linux:create:deb
-          tar -czf bin/LocalTodo-linux-amd64.tar.gz -C bin localtodo
+          tar -czf bin/yi-todo-linux-amd64.tar.gz -C bin yi-todo
       - uses: actions/upload-artifact@v4
         with:
           name: linux-packages
           path: |
             bin/*.deb
-            bin/LocalTodo-linux-amd64.tar.gz
+            bin/yi-todo-linux-amd64.tar.gz
           if-no-files-found: error
 
   windows:
@@ -96,11 +96,11 @@ jobs:
       - name: Build macOS app
         run: |
           "$(go env GOPATH)/bin/wails3" package
-          ditto -c -k --sequesterRsrc --keepParent bin/localtodo.app "bin/LocalTodo-macos-$(uname -m).app.zip"
+          ditto -c -k --sequesterRsrc --keepParent bin/yi-todo.app "bin/yi-todo-macos-$(uname -m).app.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-packages
-          path: bin/LocalTodo-macos-*.app.zip
+          path: bin/yi-todo-macos-*.app.zip
           if-no-files-found: error
 
   publish:
@@ -117,4 +117,4 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --title "LocalTodo ${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        run: gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --title "yi-todo ${GITHUB_REF_NAME}" --generate-notes --verify-tag

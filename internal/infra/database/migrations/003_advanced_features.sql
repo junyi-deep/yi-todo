@@ -26,8 +26,11 @@ CREATE TABLE reminders (
     remind_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     fired_at TEXT,
+    repeat_type TEXT NOT NULL DEFAULT 'none',
+    repeat_value INTEGER,
     created_at TEXT NOT NULL,
-    CHECK(status IN ('pending','fired','cancelled'))
+    CHECK(status IN ('pending','fired','cancelled')),
+    CHECK(repeat_type IN ('none','daily','weekly','monthly'))
 );
 
 CREATE TABLE pomodoro_sessions (

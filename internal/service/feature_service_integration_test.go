@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,12 @@ func TestAdvancedFeaturesPersistAndValidate(t *testing.T) {
 
 	tasks := NewTaskService(dbsqlite.NewTaskRepository(db))
 	features := NewFeatureService(dbsqlite.NewFeatureRepository(db), filepath.Join(root, "attachments"))
+	if err := features.SetSetting(SetSettingInput{Key: "appearance.theme", Value: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	if theme, err := features.GetSetting("appearance.theme"); err != nil || theme != "dark" {
+		t.Fatalf("theme=%q err=%v", theme, err)
+	}
 	parent, err := tasks.CreateTask(CreateTaskInput{Title: "Calendar launch"})
 	if err != nil {
 		t.Fatal(err)
@@ -42,13 +49,38 @@ func TestAdvancedFeaturesPersistAndValidate(t *testing.T) {
 	if err != nil || len(filtered) != 1 {
 		t.Fatalf("filtered search=%v err=%v", filtered, err)
 	}
-	child, err := features.CreateSubtask(CreateSubtaskInput{ParentID: parent.ID, Title: "Ship UI"})
+	child, err := tasks.CreateTask(CreateTaskInput{ParentID: &parent.ID, Title: "Ship UI"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	children, _ := features.ListSubtasks(parent.ID)
 	if len(children) != 1 || children[0].ParentID == nil {
 		t.Fatalf("children=%v", children)
+	}
+	if _, err := tasks.CompleteTask(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	completedParent, err := tasks.GetTask(parent.ID)
+	if err != nil || completedParent.Status != domain.TaskStatusCompleted {
+		t.Fatalf("completed parent=%+v err=%v", completedParent, err)
+	}
+	newChild, err := tasks.CreateTask(CreateTaskInput{ParentID: &parent.ID, Title: "Follow-up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedParent, err := tasks.GetTask(parent.ID)
+	if err != nil || reopenedParent.Status != domain.TaskStatusInProgress {
+		t.Fatalf("reopened parent=%+v err=%v", reopenedParent, err)
+	}
+	deepest := newChild
+	for level := 3; level <= 6; level++ {
+		deepest, err = tasks.CreateTask(CreateTaskInput{ParentID: &deepest.ID, Title: fmt.Sprintf("Level %d", level)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tasks.CreateTask(CreateTaskInput{ParentID: &deepest.ID, Title: "Level 7"}); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("expected six-level validation, got %v", err)
 	}
 	if err := features.CreateDependency(CreateDependencyInput{PredecessorID: parent.ID, SuccessorID: child.ID}); err != nil {
 		t.Fatal(err)
@@ -102,12 +134,18 @@ func TestAdvancedFeaturesPersistAndValidate(t *testing.T) {
 	if err != nil || restored.Title != "Calendar launch" {
 		t.Fatalf("restored=%+v err=%v", restored, err)
 	}
-	payload, err := backup.ExportData()
-	if err != nil || payload == "" {
-		t.Fatalf("export err=%v", err)
-	}
-	if err := backup.ImportData(payload); err != nil {
+	if err := backup.DeleteBackup(createdBackup.Name); err != nil {
 		t.Fatal(err)
+	}
+	for index := 0; index < 12; index++ {
+		backup.now = func() time.Time { return now.Add(time.Duration(index) * time.Second) }
+		if _, err := backup.CreateBackup(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backups, err := backup.ListBackups()
+	if err != nil || len(backups) != 10 {
+		t.Fatalf("backups=%d err=%v", len(backups), err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

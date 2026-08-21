@@ -5,13 +5,13 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "LocalTodo"
-  productName: "LocalTodo"
-  productIdentifier: "com.junyiwu.localtodo"
+  companyName: "yi-todo"
+  productName: "yi-todo"
+  productIdentifier: "com.junyiwu.ytodo"
   description: "Local-first desktop task manager"
-  copyright: "Copyright 2026 LocalTodo"
-  comments: "LocalTodo desktop application"
-  version: "0.0.1"
+  copyright: "Copyright 2026 yi-todo"
+  comments: "yi-todo desktop application"
+  version: "0.0.2"
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
   #                               # If not set and Assets.car exists, defaults to "appicon"

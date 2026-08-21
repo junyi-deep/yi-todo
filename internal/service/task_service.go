@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ type TaskService struct {
 type CreateTaskInput struct {
 	Title     string  `json:"title"`
 	ProjectID *string `json:"projectId"`
+	ParentID  *string `json:"parentId"`
 }
 
 type UpdateTaskInput struct {
@@ -30,12 +32,20 @@ type UpdateTaskInput struct {
 }
 
 type TaskQuery struct {
-	View      string     `json:"view"`
-	ProjectID *string    `json:"projectId"`
-	DueFrom   *time.Time `json:"dueFrom"`
-	DueTo     *time.Time `json:"dueTo"`
-	Limit     int        `json:"limit"`
-	Offset    int        `json:"offset"`
+	View       string             `json:"view"`
+	TitleQuery string             `json:"titleQuery"`
+	ProjectID  *string            `json:"projectId"`
+	CategoryID *string            `json:"categoryId"`
+	DueFrom    *time.Time         `json:"dueFrom"`
+	DueTo      *time.Time         `json:"dueTo"`
+	Status     *domain.TaskStatus `json:"status"`
+	Important  *bool              `json:"important"`
+	Urgent     *bool              `json:"urgent"`
+	StartFrom  *time.Time         `json:"startFrom"`
+	EndTo      *time.Time         `json:"endTo"`
+	Sort       string             `json:"sort"`
+	Limit      int                `json:"limit"`
+	Offset     int                `json:"offset"`
 }
 
 type UpdateTaskMetadataInput struct {
@@ -50,32 +60,28 @@ type UpdateTaskMetadataInput struct {
 	EstimatedMinutes *int       `json:"estimatedMinutes"`
 }
 
-type SetTaskTagsInput struct {
-	ID     string   `json:"id"`
-	TagIDs []string `json:"tagIds"`
-}
-
 type TaskDetail struct {
-	Task domain.Task  `json:"task"`
-	Tags []domain.Tag `json:"tags"`
+	Task domain.Task `json:"task"`
 }
 
 type TaskListItem struct {
-	ID          string            `json:"id"`
-	ParentID    *string           `json:"parentId"`
-	ProjectID   *string           `json:"projectId"`
-	Title       string            `json:"title"`
-	Status      domain.TaskStatus `json:"status"`
-	Priority    int               `json:"priority"`
-	Important   bool              `json:"important"`
-	Urgent      bool              `json:"urgent"`
-	StartAt     *time.Time        `json:"startAt"`
-	DueAt       *time.Time        `json:"dueAt"`
-	CompletedAt *time.Time        `json:"completedAt"`
-	Progress    int               `json:"progress"`
-	SortOrder   float64           `json:"sortOrder"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
+	ID               string            `json:"id"`
+	ParentID         *string           `json:"parentId"`
+	ProjectID        *string           `json:"projectId"`
+	Title            string            `json:"title"`
+	Status           domain.TaskStatus `json:"status"`
+	Priority         int               `json:"priority"`
+	Important        bool              `json:"important"`
+	Urgent           bool              `json:"urgent"`
+	StartAt          *time.Time        `json:"startAt"`
+	DueAt            *time.Time        `json:"dueAt"`
+	CompletedAt      *time.Time        `json:"completedAt"`
+	Progress         int               `json:"progress"`
+	SortOrder        float64           `json:"sortOrder"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	UpdatedAt        time.Time         `json:"updatedAt"`
+	EstimatedMinutes *int              `json:"estimatedMinutes"`
+	ChildCount       int               `json:"childCount"`
 }
 
 func NewTaskService(repository repository.TaskRepository) *TaskService {
@@ -108,19 +114,62 @@ func (s *TaskService) CreateTask(input CreateTaskInput) (TaskListItem, error) {
 	if err != nil {
 		return TaskListItem{}, fmt.Errorf("generate task id: %w", err)
 	}
-	now := s.now().UTC()
+	localNow := s.now()
+	now := localNow.UTC()
+	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 9, 0, 0, 0, localNow.Location()).UTC()
+	due := start.Add(time.Hour)
+	estimated := 25
+	priority := 0
+	important := false
+	urgent := false
+	if input.ParentID != nil {
+		depth, depthErr := s.repository.Depth(s.ctx, *input.ParentID)
+		if depthErr != nil {
+			return TaskListItem{}, depthErr
+		}
+		if depth >= 6 {
+			return TaskListItem{}, fmt.Errorf("%w: tasks support at most 6 levels", domain.ErrValidation)
+		}
+		parent, parentErr := s.repository.Get(s.ctx, *input.ParentID)
+		if parentErr != nil {
+			return TaskListItem{}, parentErr
+		}
+		if input.ProjectID == nil {
+			input.ProjectID = parent.ProjectID
+		}
+		if parent.StartAt != nil {
+			start = *parent.StartAt
+		}
+		if parent.DueAt != nil {
+			due = *parent.DueAt
+		}
+		if parent.EstimatedMinutes != nil {
+			estimated = *parent.EstimatedMinutes
+		}
+		priority, important, urgent = parent.Priority, parent.Important, parent.Urgent
+	}
 	task, err := s.repository.Create(s.ctx, domain.Task{
 		ID:                id,
+		ParentID:          input.ParentID,
 		ProjectID:         input.ProjectID,
 		Title:             title,
-		DescriptionFormat: "richtext",
+		DescriptionFormat: "markdown",
 		Status:            domain.TaskStatusTodo,
+		Priority:          priority,
+		Important:         important,
+		Urgent:            urgent,
+		StartAt:           &start,
+		DueAt:             &due,
+		EstimatedMinutes:  &estimated,
 		SortOrder:         float64(now.UnixMilli()),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	})
 	if err != nil {
 		return TaskListItem{}, err
+	}
+	if input.ParentID != nil {
+		_ = s.repository.ReconcileAncestors(s.ctx, id, now)
 	}
 	return toListItem(task), nil
 }
@@ -201,53 +250,91 @@ func (s *TaskService) GetTaskDetail(id string) (TaskDetail, error) {
 	if err != nil {
 		return TaskDetail{}, err
 	}
-	tags, err := s.repository.GetTags(s.ctx, id)
-	if err != nil {
-		return TaskDetail{}, err
-	}
-	return TaskDetail{Task: task, Tags: tags}, nil
+	return TaskDetail{Task: task}, nil
 }
 
-func (s *TaskService) SetTags(input SetTaskTagsInput) (TaskDetail, error) {
+type UpdateTaskStatusInput struct {
+	ID     string            `json:"id"`
+	Status domain.TaskStatus `json:"status"`
+}
+
+func (s *TaskService) UpdateTaskStatus(input UpdateTaskStatusInput) (TaskListItem, error) {
 	if input.ID == "" {
-		return TaskDetail{}, fmt.Errorf("%w: task id is required", domain.ErrValidation)
+		return TaskListItem{}, fmt.Errorf("%w: task id is required", domain.ErrValidation)
 	}
-	seen := make(map[string]struct{}, len(input.TagIDs))
-	for _, id := range input.TagIDs {
-		if id == "" {
-			return TaskDetail{}, fmt.Errorf("%w: tag id is required", domain.ErrValidation)
-		}
-		if _, exists := seen[id]; exists {
-			return TaskDetail{}, fmt.Errorf("%w: duplicate tag id", domain.ErrValidation)
-		}
-		seen[id] = struct{}{}
+	if input.Status != domain.TaskStatusTodo && input.Status != domain.TaskStatusInProgress && input.Status != domain.TaskStatusCompleted {
+		return TaskListItem{}, fmt.Errorf("%w: invalid task status", domain.ErrValidation)
 	}
-	if err := s.repository.SetTags(s.ctx, input.ID, input.TagIDs); err != nil {
-		return TaskDetail{}, err
+	task, err := s.repository.SetStatus(s.ctx, input.ID, input.Status, s.now().UTC())
+	if err != nil {
+		return TaskListItem{}, err
 	}
-	return s.GetTaskDetail(input.ID)
+	_ = s.repository.ReconcileAncestors(s.ctx, input.ID, s.now().UTC())
+	return toListItem(task), nil
 }
 
 func (s *TaskService) ListTasks(query TaskQuery) ([]TaskListItem, error) {
+	query, err := normalizeTaskQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := s.repository.List(s.ctx, toRepositoryTaskQuery(query))
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(tasks))
+	for index := range tasks {
+		ids[index] = tasks[index].ID
+	}
+	childCounts, err := s.repository.ChildCounts(s.ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]TaskListItem, 0, len(tasks))
+	for _, task := range tasks {
+		item := toListItem(task)
+		item.ChildCount = childCounts[task.ID]
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *TaskService) CountTasks(query TaskQuery) (int, error) {
+	query, err := normalizeTaskQuery(query)
+	if err != nil {
+		return 0, err
+	}
+	return s.repository.Count(s.ctx, toRepositoryTaskQuery(query))
+}
+
+func normalizeTaskQuery(query TaskQuery) (TaskQuery, error) {
+	query.TitleQuery = strings.TrimSpace(query.TitleQuery)
 	if query.View == "" {
 		query.View = "inbox"
 	}
 	validView := query.View == "inbox" || query.View == "all" || query.View == "today" ||
-		query.View == "upcoming" || query.View == "completed" || query.View == "project" || query.View == "range"
+		query.View == "upcoming" || query.View == "completed" || query.View == "project" || query.View == "category" || query.View == "range"
 	if !validView {
-		return nil, fmt.Errorf("%w: unsupported task view %q", domain.ErrValidation, query.View)
+		return TaskQuery{}, fmt.Errorf("%w: unsupported task view %q", domain.ErrValidation, query.View)
 	}
 	if query.View == "today" && (query.DueFrom == nil || query.DueTo == nil || !query.DueTo.After(*query.DueFrom)) {
-		return nil, fmt.Errorf("%w: today view requires a valid date range", domain.ErrValidation)
+		return TaskQuery{}, fmt.Errorf("%w: today view requires a valid date range", domain.ErrValidation)
 	}
 	if query.View == "upcoming" && query.DueFrom == nil {
-		return nil, fmt.Errorf("%w: upcoming view requires dueFrom", domain.ErrValidation)
+		return TaskQuery{}, fmt.Errorf("%w: upcoming view requires dueFrom", domain.ErrValidation)
 	}
 	if query.View == "project" && (query.ProjectID == nil || *query.ProjectID == "") {
-		return nil, fmt.Errorf("%w: project view requires projectId", domain.ErrValidation)
+		return TaskQuery{}, fmt.Errorf("%w: project view requires projectId", domain.ErrValidation)
+	}
+	if query.View == "category" && (query.CategoryID == nil || *query.CategoryID == "") {
+		return TaskQuery{}, fmt.Errorf("%w: category view requires categoryId", domain.ErrValidation)
+	}
+	validSort := query.Sort == "" || query.Sort == "default" || query.Sort == "start" || query.Sort == "due" || query.Sort == "title" || query.Sort == "created"
+	if !validSort {
+		return TaskQuery{}, fmt.Errorf("%w: unsupported task sort %q", domain.ErrValidation, query.Sort)
 	}
 	if query.View == "range" && (query.DueFrom == nil || query.DueTo == nil || !query.DueTo.After(*query.DueFrom)) {
-		return nil, fmt.Errorf("%w: range view requires valid bounds", domain.ErrValidation)
+		return TaskQuery{}, fmt.Errorf("%w: range view requires valid bounds", domain.ErrValidation)
 	}
 	if query.Limit <= 0 {
 		query.Limit = 200
@@ -256,20 +343,19 @@ func (s *TaskService) ListTasks(query TaskQuery) ([]TaskListItem, error) {
 		query.Limit = 10000
 	}
 	if query.Offset < 0 {
-		return nil, fmt.Errorf("%w: offset cannot be negative", domain.ErrValidation)
+		return TaskQuery{}, fmt.Errorf("%w: offset cannot be negative", domain.ErrValidation)
 	}
-	tasks, err := s.repository.List(s.ctx, repository.TaskListQuery{
-		View: query.View, ProjectID: query.ProjectID, DueFrom: utcPointer(query.DueFrom),
-		DueTo: utcPointer(query.DueTo), Limit: query.Limit, Offset: query.Offset,
-	})
-	if err != nil {
-		return nil, err
+	return query, nil
+}
+
+func toRepositoryTaskQuery(query TaskQuery) repository.TaskListQuery {
+	return repository.TaskListQuery{
+		View: query.View, TitleQuery: query.TitleQuery, ProjectID: query.ProjectID, CategoryID: query.CategoryID,
+		DueFrom: utcPointer(query.DueFrom), DueTo: utcPointer(query.DueTo),
+		Status: query.Status, Important: query.Important, Urgent: query.Urgent,
+		StartFrom: utcPointer(query.StartFrom), EndTo: utcPointer(query.EndTo), Sort: query.Sort,
+		Limit: query.Limit, Offset: query.Offset,
 	}
-	items := make([]TaskListItem, 0, len(tasks))
-	for _, task := range tasks {
-		items = append(items, toListItem(task))
-	}
-	return items, nil
 }
 
 func utcPointer(value *time.Time) *time.Time {
@@ -288,6 +374,7 @@ func (s *TaskService) setCompleted(id string, completed bool) (TaskListItem, err
 	if err != nil {
 		return TaskListItem{}, err
 	}
+	_ = s.repository.ReconcileAncestors(s.ctx, id, s.now().UTC())
 	return toListItem(task), nil
 }
 
@@ -299,6 +386,7 @@ func toListItem(task domain.Task) TaskListItem {
 		StartAt: task.StartAt, DueAt: task.DueAt, CompletedAt: task.CompletedAt,
 		Progress: task.Progress, SortOrder: task.SortOrder,
 		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		EstimatedMinutes: task.EstimatedMinutes,
 	}
 }
 

@@ -1,13 +1,13 @@
 [Desktop Entry]
 Version=1.0
-Name=LocalTodo
+Name=yi-todo
 Comment=Local-first desktop task manager
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/localtodo %u
+Exec=/usr/local/bin/yi-todo %u
 Terminal=false
 Type=Application
-Icon=localtodo
+Icon=yi-todo
 Categories=Utility;
-StartupWMClass=localtodo
+StartupWMClass=yi-todo
 
  

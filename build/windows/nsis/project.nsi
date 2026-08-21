@@ -19,9 +19,9 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "localtodo"
-## !define INFO_COMPANYNAME    "My Company" # Default "LocalTodo"
-## !define INFO_PRODUCTNAME    "My Product Name" # Default "LocalTodo"
+## !define INFO_PROJECTNAME    "my-project" # Default "yi-todo"
+## !define INFO_COMPANYNAME    "My Company" # Default "yi-todo"
+## !define INFO_PRODUCTNAME    "My Product Name" # Default "yi-todo"
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© now, My Company"
 ###

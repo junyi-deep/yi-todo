@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/junyiwu/yi-todo/internal/domain"
@@ -54,32 +55,21 @@ func (r *TaskRepository) Get(ctx context.Context, id string) (domain.Task, error
 }
 
 func (r *TaskRepository) List(ctx context.Context, query repository.TaskListQuery) ([]domain.Task, error) {
-	where := " WHERE deleted_at IS NULL"
-	args := make([]any, 0, 5)
-	switch query.View {
-	case "inbox":
-		where += " AND project_id IS NULL AND status IN ('todo', 'in_progress')"
-	case "all":
-		where += " AND status IN ('todo', 'in_progress')"
-	case "completed":
-		where += " AND status = 'completed'"
-	case "today":
-		where += " AND status IN ('todo', 'in_progress') AND ((due_at >= ? AND due_at < ?) OR (start_at >= ? AND start_at < ?))"
-		args = append(args, formatTime(*query.DueFrom), formatTime(*query.DueTo), formatTime(*query.DueFrom), formatTime(*query.DueTo))
-	case "upcoming":
-		where += " AND status IN ('todo', 'in_progress') AND due_at >= ?"
-		args = append(args, formatTime(*query.DueFrom))
-	case "project":
-		where += " AND status IN ('todo', 'in_progress') AND project_id = ?"
-		args = append(args, *query.ProjectID)
-	case "range":
-		where += " AND status IN ('todo', 'in_progress') AND COALESCE(due_at, start_at) >= ? AND COALESCE(start_at, due_at) < ?"
-		args = append(args, formatTime(*query.DueFrom), formatTime(*query.DueTo))
+	where, args := taskListWhere(query)
+	orderBy := "sort_order ASC, created_at DESC"
+	switch query.Sort {
+	case "start":
+		orderBy = "start_at IS NULL, start_at ASC, sort_order ASC"
+	case "due":
+		orderBy = "due_at IS NULL, due_at ASC, sort_order ASC"
+	case "title":
+		orderBy = "title COLLATE NOCASE ASC, sort_order ASC"
+	case "created":
+		orderBy = "created_at DESC"
 	}
 	args = append(args, query.Limit, query.Offset)
 	rows, err := r.db.QueryContext(ctx, taskSelect+where+`
-        ORDER BY CASE status WHEN 'completed' THEN 1 ELSE 0 END,
-                 sort_order ASC, created_at DESC
+        ORDER BY CASE status WHEN 'completed' THEN 1 ELSE 0 END, `+orderBy+`
         LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list tasks: %v", domain.ErrDatabase, err)
@@ -98,6 +88,109 @@ func (r *TaskRepository) List(ctx context.Context, query repository.TaskListQuer
 		return nil, fmt.Errorf("%w: iterate tasks: %v", domain.ErrDatabase, err)
 	}
 	return tasks, nil
+}
+
+func (r *TaskRepository) Count(ctx context.Context, query repository.TaskListQuery) (int, error) {
+	where, args := taskListWhere(query)
+	var count int
+	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks"+where, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("%w: count tasks: %v", domain.ErrDatabase, err)
+	}
+	return count, nil
+}
+
+func (r *TaskRepository) ChildCounts(ctx context.Context, ids []string) (map[string]int, error) {
+	return childCounts(ctx, r.db, ids)
+}
+
+func taskListWhere(query repository.TaskListQuery) (string, []any) {
+	where := " WHERE deleted_at IS NULL"
+	args := make([]any, 0, 12)
+	switch query.View {
+	case "inbox":
+		where += " AND project_id IS NULL AND status IN ('todo', 'in_progress')"
+	case "all":
+		where += " AND status IN ('todo', 'in_progress')"
+	case "completed":
+		where += " AND status = 'completed'"
+	case "today":
+		where += " AND status IN ('todo', 'in_progress') AND ((due_at >= ? AND due_at < ?) OR (start_at >= ? AND start_at < ?))"
+		args = append(args, formatTime(*query.DueFrom), formatTime(*query.DueTo), formatTime(*query.DueFrom), formatTime(*query.DueTo))
+	case "upcoming":
+		where += " AND status IN ('todo', 'in_progress') AND due_at >= ?"
+		args = append(args, formatTime(*query.DueFrom))
+	case "project":
+		where += " AND status IN ('todo', 'in_progress') AND project_id = ?"
+		args = append(args, *query.ProjectID)
+	case "category":
+		where += ` AND status IN ('todo', 'in_progress') AND project_id IN (
+            WITH RECURSIVE descendants(id) AS (
+                SELECT id FROM categories WHERE id = ?
+                UNION ALL SELECT c.id FROM categories c JOIN descendants d ON c.parent_id = d.id
+            )
+            SELECT p.id FROM projects p JOIN descendants d ON p.category_id = d.id
+            WHERE p.archived_at IS NULL
+        )`
+		args = append(args, *query.CategoryID)
+	case "range":
+		where += " AND status IN ('todo', 'in_progress') AND COALESCE(due_at, start_at) >= ? AND COALESCE(start_at, due_at) < ?"
+		args = append(args, formatTime(*query.DueFrom), formatTime(*query.DueTo))
+	}
+	if query.Status != nil {
+		where += " AND status = ?"
+		args = append(args, *query.Status)
+	}
+	if query.Important != nil {
+		where += " AND important = ?"
+		args = append(args, boolInt(*query.Important))
+	}
+	if query.Urgent != nil {
+		where += " AND urgent = ?"
+		args = append(args, boolInt(*query.Urgent))
+	}
+	if query.StartFrom != nil {
+		where += " AND start_at >= ?"
+		args = append(args, formatTime(*query.StartFrom))
+	}
+	if query.EndTo != nil {
+		where += " AND due_at <= ?"
+		args = append(args, formatTime(*query.EndTo))
+	}
+	if query.TitleQuery != "" {
+		where += ` AND title LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(query.TitleQuery)+"%")
+	}
+	return where, args
+}
+
+func escapeLike(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+func childCounts(ctx context.Context, db *sql.DB, ids []string) (map[string]int, error) {
+	result := make(map[string]int, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		args[index] = id
+	}
+	rows, err := db.QueryContext(ctx, `SELECT parent_id, COUNT(*) FROM tasks WHERE deleted_at IS NULL AND parent_id IN (`+placeholders+`) GROUP BY parent_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: count child tasks: %v", domain.ErrDatabase, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return nil, err
+		}
+		result[id] = count
+	}
+	return result, rows.Err()
 }
 
 func (r *TaskRepository) UpdateMetadata(ctx context.Context, id string, update repository.TaskMetadataUpdate, updatedAt time.Time) (domain.Task, error) {
@@ -155,6 +248,57 @@ func (r *TaskRepository) SetCompletion(ctx context.Context, id string, completed
 	return r.Get(ctx, id)
 }
 
+func (r *TaskRepository) SetStatus(ctx context.Context, id string, status domain.TaskStatus, at time.Time) (domain.Task, error) {
+	completedAt := any(nil)
+	if status == domain.TaskStatusCompleted {
+		completedAt = formatTime(at)
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE tasks SET status=?,progress=CASE WHEN ?='completed' THEN 100 WHEN ?='in_progress' AND progress IN (0,100) THEN 50 WHEN ?='todo' AND progress=100 THEN 0 ELSE progress END,completed_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL`, status, status, status, status, completedAt, formatTime(at), id)
+	if err != nil {
+		return domain.Task{}, fmt.Errorf("%w: update task status: %v", domain.ErrDatabase, err)
+	}
+	if err := requireAffected(result, id); err != nil {
+		return domain.Task{}, err
+	}
+	return r.Get(ctx, id)
+}
+
+func (r *TaskRepository) Depth(ctx context.Context, id string) (int, error) {
+	var depth int
+	err := r.db.QueryRowContext(ctx, `WITH RECURSIVE ancestors(id,parent_id,depth) AS (SELECT id,parent_id,1 FROM tasks WHERE id=? AND deleted_at IS NULL UNION ALL SELECT t.id,t.parent_id,a.depth+1 FROM tasks t JOIN ancestors a ON t.id=a.parent_id WHERE t.deleted_at IS NULL) SELECT COALESCE(MAX(depth),0) FROM ancestors`, id).Scan(&depth)
+	return depth, err
+}
+
+func (r *TaskRepository) ReconcileAncestors(ctx context.Context, id string, at time.Time) error {
+	current := id
+	for level := 0; level < 6; level++ {
+		var parent sql.NullString
+		if err := r.db.QueryRowContext(ctx, `SELECT parent_id FROM tasks WHERE id=?`, current).Scan(&parent); err != nil || !parent.Valid {
+			return err
+		}
+		var total, completed, started int
+		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(status='completed'),0),COALESCE(SUM(status IN ('completed','in_progress')),0) FROM tasks WHERE parent_id=? AND deleted_at IS NULL`, parent.String).Scan(&total, &completed, &started); err != nil {
+			return err
+		}
+		status := domain.TaskStatusTodo
+		progress := 0
+		var completedAt any
+		if total > 0 && completed == total {
+			status = domain.TaskStatusCompleted
+			progress = 100
+			completedAt = formatTime(at)
+		} else if started > 0 {
+			status = domain.TaskStatusInProgress
+			progress = completed * 100 / total
+		}
+		if _, err := r.db.ExecContext(ctx, `UPDATE tasks SET status=?,progress=?,completed_at=?,updated_at=? WHERE id=?`, status, progress, completedAt, formatTime(at), parent.String); err != nil {
+			return err
+		}
+		current = parent.String
+	}
+	return nil
+}
+
 func (r *TaskRepository) SoftDelete(ctx context.Context, id string, at time.Time) error {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
@@ -164,62 +308,6 @@ func (r *TaskRepository) SoftDelete(ctx context.Context, id string, at time.Time
 		return fmt.Errorf("%w: delete task: %v", domain.ErrDatabase, err)
 	}
 	return requireAffected(result, id)
-}
-
-func (r *TaskRepository) SetTags(ctx context.Context, id string, tagIDs []string) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("%w: begin set tags: %v", domain.ErrDatabase, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE id = ? AND deleted_at IS NULL", id).Scan(&exists); err != nil {
-		return fmt.Errorf("%w: check task for tags: %v", domain.ErrDatabase, err)
-	}
-	if exists == 0 {
-		return fmt.Errorf("%w: task %s", domain.ErrNotFound, id)
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM task_tags WHERE task_id = ?", id); err != nil {
-		return fmt.Errorf("%w: clear task tags: %v", domain.ErrDatabase, err)
-	}
-	for _, tagID := range tagIDs {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO task_tags(task_id, tag_id) VALUES (?, ?)", id, tagID); err != nil {
-			return fmt.Errorf("%w: attach task tag: %v", domain.ErrDatabase, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%w: commit task tags: %v", domain.ErrDatabase, err)
-	}
-	return nil
-}
-
-func (r *TaskRepository) GetTags(ctx context.Context, id string) ([]domain.Tag, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT t.id, t.name, t.color, t.created_at, t.updated_at
-        FROM tags t JOIN task_tags tt ON tt.tag_id = t.id
-        WHERE tt.task_id = ? ORDER BY t.name`, id)
-	if err != nil {
-		return nil, fmt.Errorf("%w: list task tags: %v", domain.ErrDatabase, err)
-	}
-	defer rows.Close()
-	tags := make([]domain.Tag, 0)
-	for rows.Next() {
-		var tag domain.Tag
-		var color sql.NullString
-		var createdAt, updatedAt string
-		if err := rows.Scan(&tag.ID, &tag.Name, &color, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("%w: scan task tag: %v", domain.ErrDatabase, err)
-		}
-		tag.Color = stringPointer(color)
-		if tag.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
-			return nil, fmt.Errorf("%w: parse tag created_at: %v", domain.ErrDatabase, err)
-		}
-		if tag.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
-			return nil, fmt.Errorf("%w: parse tag updated_at: %v", domain.ErrDatabase, err)
-		}
-		tags = append(tags, tag)
-	}
-	return tags, rows.Err()
 }
 
 const taskSelect = `SELECT

@@ -16,11 +16,17 @@ import (
 )
 
 type FeatureService struct {
-	repository     repository.FeatureRepository
-	attachmentsDir string
-	ctx            context.Context
-	now            func() time.Time
-	wakeReminders  chan struct{}
+	repository          repository.FeatureRepository
+	attachmentsDir      string
+	ctx                 context.Context
+	now                 func() time.Time
+	wakeReminders       chan struct{}
+	notifyFocusComplete func()
+}
+
+//wails:ignore
+func (s *FeatureService) SetFocusCompletionNotifier(notify func()) {
+	s.notifyFocusComplete = notify
 }
 
 func NewFeatureService(repository repository.FeatureRepository, attachmentsDir string) *FeatureService {
@@ -43,7 +49,7 @@ func (s *FeatureService) UpdateDescription(input UpdateDescriptionInput) (TaskDe
 	if input.ID == "" {
 		return TaskDetail{}, fmt.Errorf("%w: task id is required", domain.ErrValidation)
 	}
-	if input.Format != "markdown" && input.Format != "richtext" {
+	if input.Format != "markdown" {
 		return TaskDetail{}, fmt.Errorf("%w: unsupported description format", domain.ErrValidation)
 	}
 	if len(input.Source) > 2_000_000 {
@@ -53,34 +59,9 @@ func (s *FeatureService) UpdateDescription(input UpdateDescriptionInput) (TaskDe
 	if err != nil {
 		return TaskDetail{}, err
 	}
-	return TaskDetail{Task: task, Tags: []domain.Tag{}}, nil
+	return TaskDetail{Task: task}, nil
 }
 
-type CreateSubtaskInput struct {
-	ParentID string `json:"parentId"`
-	Title    string `json:"title"`
-}
-
-func (s *FeatureService) CreateSubtask(input CreateSubtaskInput) (TaskListItem, error) {
-	if input.ParentID == "" {
-		return TaskListItem{}, fmt.Errorf("%w: parent id is required", domain.ErrValidation)
-	}
-	title, err := domain.ValidateTitle(input.Title)
-	if err != nil {
-		return TaskListItem{}, err
-	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		return TaskListItem{}, err
-	}
-	now := s.now().UTC()
-	parent := input.ParentID
-	task, err := s.repository.CreateChild(s.ctx, domain.Task{ID: id.String(), ParentID: &parent, Title: title, DescriptionFormat: "richtext", Status: domain.TaskStatusTodo, SortOrder: float64(now.UnixMilli()), CreatedAt: now, UpdatedAt: now})
-	if err != nil {
-		return TaskListItem{}, err
-	}
-	return toListItem(task), nil
-}
 func (s *FeatureService) ListSubtasks(parentID string) ([]TaskListItem, error) {
 	if parentID == "" {
 		return nil, fmt.Errorf("%w: parent id is required", domain.ErrValidation)
@@ -89,9 +70,19 @@ func (s *FeatureService) ListSubtasks(parentID string) ([]TaskListItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]string, len(tasks))
+	for index := range tasks {
+		ids[index] = tasks[index].ID
+	}
+	childCounts, err := s.repository.ChildCounts(s.ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]TaskListItem, 0, len(tasks))
 	for _, task := range tasks {
-		items = append(items, toListItem(task))
+		item := toListItem(task)
+		item.ChildCount = childCounts[task.ID]
+		items = append(items, item)
 	}
 	return items, nil
 }
@@ -112,8 +103,6 @@ func (s *FeatureService) SearchTasks(keyword string) ([]domain.SearchResult, err
 		switch key {
 		case "project":
 			query.Project = value
-		case "tag":
-			query.Tags = append(query.Tags, value)
 		case "status":
 			query.Status = value
 		case "after":
@@ -223,9 +212,30 @@ func (s *FeatureService) ReadAttachment(id string) (domain.AttachmentContent, er
 	return domain.AttachmentContent{Attachment: item, DataBase64: base64.StdEncoding.EncodeToString(data)}, nil
 }
 
+func (s *FeatureService) DeleteAttachment(id string) error {
+	item, err := s.repository.GetAttachment(s.ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repository.DeleteAttachment(s.ctx, id); err != nil {
+		return err
+	}
+	return os.Remove(filepath.Join(s.attachmentsDir, filepath.Clean(item.RelativePath)))
+}
+
+func (s *FeatureService) OpenAttachment(id string) error {
+	item, err := s.repository.GetAttachment(s.ctx, id)
+	if err != nil {
+		return err
+	}
+	return application.Get().Browser.OpenFile(filepath.Join(s.attachmentsDir, filepath.Clean(item.RelativePath)))
+}
+
 type CreateReminderInput struct {
-	TaskID   string    `json:"taskId"`
-	RemindAt time.Time `json:"remindAt"`
+	TaskID      string    `json:"taskId"`
+	RemindAt    time.Time `json:"remindAt"`
+	RepeatType  string    `json:"repeatType"`
+	RepeatValue *int      `json:"repeatValue"`
 }
 
 func (s *FeatureService) CreateReminder(input CreateReminderInput) (domain.Reminder, error) {
@@ -233,7 +243,13 @@ func (s *FeatureService) CreateReminder(input CreateReminderInput) (domain.Remin
 		return domain.Reminder{}, fmt.Errorf("%w: task and reminder time are required", domain.ErrValidation)
 	}
 	id, _ := uuid.NewV7()
-	item := domain.Reminder{ID: id.String(), TaskID: input.TaskID, RemindAt: input.RemindAt.UTC(), Status: "pending", CreatedAt: s.now().UTC()}
+	if input.RepeatType == "" {
+		input.RepeatType = "none"
+	}
+	if input.RepeatType != "none" && input.RepeatType != "daily" && input.RepeatType != "weekly" && input.RepeatType != "monthly" {
+		return domain.Reminder{}, fmt.Errorf("%w: invalid repeat type", domain.ErrValidation)
+	}
+	item := domain.Reminder{ID: id.String(), TaskID: input.TaskID, RemindAt: input.RemindAt.UTC(), Status: "pending", RepeatType: input.RepeatType, RepeatValue: input.RepeatValue, CreatedAt: s.now().UTC()}
 	err := s.repository.CreateReminder(s.ctx, item)
 	if err == nil {
 		select {
@@ -242,6 +258,9 @@ func (s *FeatureService) CreateReminder(input CreateReminderInput) (domain.Remin
 		}
 	}
 	return item, err
+}
+func (s *FeatureService) DeleteReminder(id string) error {
+	return s.repository.DeleteReminder(s.ctx, id)
 }
 func (s *FeatureService) ListReminders(taskID string) ([]domain.Reminder, error) {
 	return s.repository.ListReminders(s.ctx, taskID)
@@ -276,12 +295,31 @@ func (s *FeatureService) runReminderScheduler(ctx context.Context) {
 		case <-timer.C:
 			if next != nil {
 				now := s.now().UTC()
-				if s.repository.MarkReminderFired(ctx, next.ID, now) == nil && application.Get() != nil {
+				var markErr error
+				if next.RepeatType == "none" {
+					markErr = s.repository.MarkReminderFired(ctx, next.ID, now)
+				} else {
+					markErr = s.repository.RescheduleReminder(ctx, next.ID, nextReminderTime(*next))
+				}
+				if markErr == nil && application.Get() != nil {
 					application.Get().Event.Emit("reminder:fired", *next)
 				}
 			}
 		}
 	}
+}
+
+func nextReminderTime(item domain.Reminder) time.Time {
+	next := item.RemindAt
+	switch item.RepeatType {
+	case "daily":
+		next = next.AddDate(0, 0, 1)
+	case "weekly":
+		next = next.AddDate(0, 0, 7)
+	case "monthly":
+		next = next.AddDate(0, 1, 0)
+	}
+	return next
 }
 
 type StartPomodoroInput struct {
@@ -321,6 +359,9 @@ func (s *FeatureService) GetActivePomodoro() (*domain.PomodoroSession, error) {
 			_ = s.repository.UpdatePomodoro(s.ctx, *x)
 			if application.Get() != nil {
 				application.Get().Event.Emit("pomodoro:completed", *x)
+			}
+			if enabled, _ := s.repository.GetSetting(s.ctx, "pomodoro.notifyOnComplete"); enabled != "false" && s.notifyFocusComplete != nil {
+				s.notifyFocusComplete()
 			}
 		}
 	}
@@ -391,6 +432,34 @@ func (s *FeatureService) GetStatistics(days int) (StatsResult, error) {
 	from := to.AddDate(0, 0, -days)
 	o, t, p, err := s.repository.GetStats(s.ctx, from, to)
 	return StatsResult{Overview: o, CompletionTrend: t, Projects: p}, err
+}
+
+type FocusStatisticsResult struct {
+	Days  []domain.FocusDay      `json:"days"`
+	Tasks []domain.TaskFocusStat `json:"tasks"`
+}
+
+func (s *FeatureService) GetFocusStatistics(days int) (FocusStatisticsResult, error) {
+	if days <= 0 {
+		days = 90
+	}
+	now := s.now().In(time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	from := today.AddDate(0, 0, -days+1).UTC()
+	to := today.AddDate(0, 0, 1).UTC()
+	d, t, err := s.repository.GetFocusStats(s.ctx, from, to)
+	return FocusStatisticsResult{Days: d, Tasks: t}, err
+}
+
+func (s *FeatureService) GetFocusStatisticsForDate(date string) (FocusStatisticsResult, error) {
+	day, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(date), time.Local)
+	if err != nil {
+		return FocusStatisticsResult{}, fmt.Errorf("%w: date must use YYYY-MM-DD", domain.ErrValidation)
+	}
+	from := day.UTC()
+	to := day.AddDate(0, 0, 1).UTC()
+	d, t, err := s.repository.GetFocusStats(s.ctx, from, to)
+	return FocusStatisticsResult{Days: d, Tasks: t}, err
 }
 func (s *FeatureService) GetSetting(key string) (string, error) {
 	if strings.TrimSpace(key) == "" {

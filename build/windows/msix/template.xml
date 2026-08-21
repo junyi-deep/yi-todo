@@ -8,16 +8,16 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="localtodo"
+        Path="yi-todo"
         Arguments=""
-        InstallLocation="C:\Program Files\LocalTodo\LocalTodo">
+        InstallLocation="C:\Program Files\yi-todo\yi-todo">
     </Installer>
     <PackageInformation
-        PackageName="LocalTodo"
-        PackageDisplayName="LocalTodo"
-        PublisherName="CN=LocalTodo"
-        PublisherDisplayName="LocalTodo"
-        Version="0.0.1.0"
+        PackageName="yi-todo"
+        PackageDisplayName="yi-todo"
+        PublisherName="CN=yi-todo"
+        PublisherDisplayName="yi-todo"
+        Version="0.0.2.0"
         PackageDescription="Local-first desktop task manager">
         <Capabilities>
             <Capability Name="runFullTrust" />
@@ -25,10 +25,10 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.junyiwu.localtodo"
+                Id="com.junyiwu.ytodo"
                 Description="Local-first desktop task manager"
-                DisplayName="LocalTodo"
-                ExecutableName="localtodo"
+                DisplayName="yi-todo"
+                ExecutableName="yi-todo"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>LocalTodo</DisplayName>
-            <PublisherDisplayName>LocalTodo</PublisherDisplayName>
+            <DisplayName>yi-todo</DisplayName>
+            <PublisherDisplayName>yi-todo</PublisherDisplayName>
             <Description>Local-first desktop task manager</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="localtodo.msix" />
+    <SaveLocation PackagePath="yi-todo.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>
