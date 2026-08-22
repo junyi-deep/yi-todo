@@ -10,7 +10,7 @@
   <Identity 
     Name="com.junyiwu.ytodo"
     Publisher="CN=yi-todo"
-    Version="0.0.2.0"
+    Version="0.0.3.0"
     ProcessorArchitecture="x64" />
   
   <Properties>

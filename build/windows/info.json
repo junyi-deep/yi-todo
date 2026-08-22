@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "0.0.2"
+		"file_version": "0.0.3"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "0.0.2",
+			"ProductVersion": "0.0.3",
 			"CompanyName": "yi-todo",
 			"FileDescription": "Local-first desktop task manager",
 			"LegalCopyright": "Copyright 2026 yi-todo",
