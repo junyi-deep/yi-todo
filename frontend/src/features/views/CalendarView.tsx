@@ -7,7 +7,11 @@ import interactionPlugin, {
   DateClickArg,
   EventResizeDoneArg,
 } from "@fullcalendar/interaction";
-import type { EventClickArg, EventDropArg } from "@fullcalendar/core";
+import type {
+  EventClickArg,
+  EventDropArg,
+  EventInput,
+} from "@fullcalendar/core";
 import { taskAPI, type TaskFilterState } from "../tasks/api";
 
 export function CalendarView({ onSelect, filters }: { onSelect: (id: string) => void; filters: TaskFilterState }) {
@@ -31,6 +35,17 @@ export function CalendarView({ onSelect, filters }: { onSelect: (id: string) => 
   const update = useMutation({
     mutationFn: taskAPI.updateMetadata,
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["calendar"] }),
+  });
+  const events: EventInput[] = (query.data ?? []).flatMap((task) => {
+    const start = task.startAt ?? task.dueAt;
+    if (!start) return [];
+    return [{
+      id: task.id,
+      title: task.title,
+      start,
+      end: task.startAt && task.dueAt ? task.dueAt : undefined,
+      allDay: false,
+    }];
   });
   const schedule = (id: string, start: Date | null, end: Date | null) => {
     const task = query.data?.find((item) => item.id === id);
@@ -67,13 +82,7 @@ export function CalendarView({ onSelect, filters }: { onSelect: (id: string) => 
         datesSet={(arg) =>
           setRange({ from: arg.start.toISOString(), to: arg.end.toISOString() })
         }
-        events={(query.data ?? []).map((task) => ({
-          id: task.id,
-          title: task.title,
-          start: task.startAt ?? task.dueAt,
-          end: task.dueAt ?? undefined,
-          allDay: false,
-        }))}
+        events={events}
         eventClick={(arg: EventClickArg) => onSelect(arg.event.id)}
         eventDrop={(arg: EventDropArg) =>
           schedule(arg.event.id, arg.event.start, arg.event.end)

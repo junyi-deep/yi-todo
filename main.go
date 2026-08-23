@@ -179,15 +179,16 @@ func run() error {
 			return
 		}
 		event.Cancel()
+		exitLabel, cancelLabel := closeDialogButtonLabels(runtime.GOOS)
 		dialog := app.Dialog.Question().
 			SetTitle("退出 yi-todo？").
 			SetMessage("关闭窗口将退出应用，确定要关闭吗？").
 			AttachToWindow(window)
-		exitButton := dialog.AddButton("退出").OnClick(func() {
+		exitButton := dialog.AddButton(exitLabel).OnClick(func() {
 			closing.Store(true)
 			app.Quit()
 		})
-		cancelButton := dialog.AddButton("取消")
+		cancelButton := dialog.AddButton(cancelLabel)
 		dialog.SetDefaultButton(cancelButton)
 		dialog.SetCancelButton(cancelButton)
 		_ = exitButton
@@ -199,6 +200,16 @@ func run() error {
 		return fmt.Errorf("run Wails application: %w", err)
 	}
 	return nil
+}
+
+func closeDialogButtonLabels(goos string) (exitLabel string, cancelLabel string) {
+	if goos == "windows" {
+		// Wails 3 alpha maps the native MB_YESNO result back to the literal
+		// labels "Yes" and "No". Other labels render, but their callbacks are
+		// never matched after the Windows message box closes.
+		return "Yes", "No"
+	}
+	return "退出", "取消"
 }
 
 func applicationContext() context.Context {
