@@ -9,6 +9,8 @@ import type {
   CreateReminderInput,
   CreateProjectInput,
   CreateTaskInput,
+  ReorderCategoryInput,
+  ReorderProjectInput,
   TaskDetail,
   TaskListItem,
   TaskQuery,
@@ -235,6 +237,10 @@ export const projectAPI = {
     ProjectService.CreateCategory({ name, parentId }),
   updateCategory: (id: string, name: string, parentId: string | null): Promise<Category> =>
     ProjectService.UpdateCategory({ id, name, parentId } satisfies UpdateCategoryInput),
+  reorderCategory: (id: string, parentId: string | null, orderedIds: string[]): Promise<void> =>
+    ProjectService.ReorderCategory({ id, parentId, orderedIds } satisfies ReorderCategoryInput),
+  reorderProject: (id: string, categoryId: string, orderedIds: string[]): Promise<void> =>
+    ProjectService.ReorderProject({ id, categoryId, orderedIds } satisfies ReorderProjectInput),
   deleteCategory: (id: string): Promise<void> => ProjectService.DeleteCategory(id),
 };
 

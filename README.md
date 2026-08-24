@@ -68,4 +68,4 @@ yi-todo stores its database at `.yi-todo/yi-todo.db` beside the executable. Atta
 
 `wails3 build` produces the native executable. `wails3 package` uses the platform tasks under `build/`. Each tagged release includes a Windows AMD64 installer and a portable ZIP containing `yi-todo.exe`. Distribution signing/notarisation credentials are intentionally not stored in the repository and must be supplied by the release environment.
 
-Pushing a semantic-version tag such as `v0.0.5` starts the Release workflow. GitHub Actions builds Linux, Windows, and macOS packages, generates SHA-256 checksums, and publishes them to the matching GitHub Release. Regular pushes and pull requests run Go tests, TypeScript typechecking, and the frontend production build.
+Pushing a semantic-version tag such as `v0.0.6` starts the Release workflow. GitHub Actions builds Linux, Windows, and macOS packages, generates SHA-256 checksums, and publishes them to the matching GitHub Release. Regular pushes and pull requests run Go tests, TypeScript typechecking, and the frontend production build.

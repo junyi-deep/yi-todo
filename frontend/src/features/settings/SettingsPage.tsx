@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { errorMessage, featureAPI } from "../tasks/api";
 import { applyTheme, type AppTheme, useThemeSetting } from "./ThemeSetting";
@@ -184,10 +185,7 @@ export function SettingsPage() {
               <p>导出任务完整信息、提醒、依赖和番茄记录；附件文件不会写入工作簿。时间范围按任务创建时间筛选。</p>
             </div>
             <div className="flex max-w-md flex-wrap items-center justify-end gap-2">
-              <select className="h-8 rounded-md border bg-background px-2 text-xs outline-none" value={exportAll ? "all" : "range"} onChange={(event) => setExportAll(event.target.value === "all")}>
-                <option value="all">全部任务</option>
-                <option value="range">选择时间范围</option>
-              </select>
+              <Select value={exportAll ? "all" : "range"} onValueChange={(value) => setExportAll(value === "all")}><SelectTrigger className="text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部任务</SelectItem><SelectItem value="range">选择时间范围</SelectItem></SelectContent></Select>
               {!exportAll && (
                 <>
                   <input aria-label="导出开始日期" type="date" className="h-8 rounded-md border bg-background px-2 text-xs" value={exportFrom} onChange={(event) => setExportFrom(event.target.value)} />

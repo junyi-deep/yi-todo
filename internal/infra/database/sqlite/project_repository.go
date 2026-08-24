@@ -73,6 +73,41 @@ func (r *ProjectRepository) Update(ctx context.Context, id, name, categoryID str
 	return r.getProject(ctx, id)
 }
 
+func (r *ProjectRepository) Reorder(ctx context.Context, id, categoryID string, orderedIDs []string, at time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w: begin project reorder: %v", domain.ErrDatabase, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ? AND archived_at IS NULL)", id).Scan(&exists); err != nil {
+		return fmt.Errorf("%w: inspect project: %v", domain.ErrDatabase, err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("%w: project %s", domain.ErrNotFound, id)
+	}
+	existing, err := stringColumn(tx.QueryContext(ctx, "SELECT id FROM projects WHERE category_id = ? AND id <> ? AND archived_at IS NULL", categoryID, id))
+	if err != nil {
+		return fmt.Errorf("%w: inspect project order: %v", domain.ErrDatabase, err)
+	}
+	if !sameIDsWithMoved(existing, orderedIDs, id) {
+		return fmt.Errorf("%w: project order is stale", domain.ErrConflict)
+	}
+	for index, projectID := range orderedIDs {
+		result, updateErr := tx.ExecContext(ctx, "UPDATE projects SET category_id = ?, sort_order = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL", categoryID, float64((index+1)*1024), formatTime(at), projectID)
+		if updateErr != nil {
+			return fmt.Errorf("%w: reorder project: %v", domain.ErrDatabase, updateErr)
+		}
+		if updateErr = requireAffected(result, projectID); updateErr != nil {
+			return updateErr
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: commit project reorder: %v", domain.ErrDatabase, err)
+	}
+	return nil
+}
+
 func (r *ProjectRepository) getProject(ctx context.Context, id string) (domain.Project, error) {
 	var project domain.Project
 	var color, icon, archivedAt sql.NullString
@@ -203,6 +238,89 @@ func (r *ProjectRepository) UpdateCategory(ctx context.Context, id, name string,
 		return domain.Category{}, fmt.Errorf("%w: commit category update: %v", domain.ErrDatabase, err)
 	}
 	return item, nil
+}
+
+func (r *ProjectRepository) ReorderCategory(ctx context.Context, id string, parentID *string, orderedIDs []string, at time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w: begin category reorder: %v", domain.ErrDatabase, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM categories WHERE id = ?)", id).Scan(&exists); err != nil {
+		return fmt.Errorf("%w: inspect category: %v", domain.ErrDatabase, err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("%w: category %s", domain.ErrNotFound, id)
+	}
+	if parentID != nil {
+		var createsCycle int
+		err = tx.QueryRowContext(ctx, `WITH RECURSIVE descendants(id) AS (
+            SELECT id FROM categories WHERE parent_id = ?
+            UNION ALL
+            SELECT c.id FROM categories c JOIN descendants d ON c.parent_id = d.id
+        ) SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ?)`, id, *parentID).Scan(&createsCycle)
+		if err != nil {
+			return fmt.Errorf("%w: inspect category tree: %v", domain.ErrDatabase, err)
+		}
+		if createsCycle != 0 {
+			return fmt.Errorf("%w: category cannot be moved into its descendant", domain.ErrConflict)
+		}
+	}
+	existing, err := stringColumn(tx.QueryContext(ctx, "SELECT id FROM categories WHERE parent_id IS ? AND id <> ?", nullableString(parentID), id))
+	if err != nil {
+		return fmt.Errorf("%w: inspect category order: %v", domain.ErrDatabase, err)
+	}
+	if !sameIDsWithMoved(existing, orderedIDs, id) {
+		return fmt.Errorf("%w: category order is stale", domain.ErrConflict)
+	}
+	for index, categoryID := range orderedIDs {
+		result, updateErr := tx.ExecContext(ctx, "UPDATE categories SET parent_id = ?, sort_order = ?, updated_at = ? WHERE id = ?", nullableString(parentID), float64((index+1)*1024), formatTime(at), categoryID)
+		if updateErr != nil {
+			return fmt.Errorf("%w: reorder category: %v", domain.ErrDatabase, updateErr)
+		}
+		if updateErr = requireAffected(result, categoryID); updateErr != nil {
+			return updateErr
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: commit category reorder: %v", domain.ErrDatabase, err)
+	}
+	return nil
+}
+
+func stringColumn(rows *sql.Rows, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	return items, rows.Err()
+}
+
+func sameIDsWithMoved(existing, ordered []string, movedID string) bool {
+	if len(ordered) != len(existing)+1 {
+		return false
+	}
+	expected := make(map[string]struct{}, len(ordered))
+	for _, id := range existing {
+		expected[id] = struct{}{}
+	}
+	expected[movedID] = struct{}{}
+	for _, id := range ordered {
+		if _, ok := expected[id]; !ok {
+			return false
+		}
+		delete(expected, id)
+	}
+	return len(expected) == 0
 }
 
 func (r *ProjectRepository) DeleteCategory(ctx context.Context, id string) error {

@@ -84,6 +84,7 @@ export const TaskRow = memo(function TaskRow({
       </button>
       <button
         type="button"
+        data-task-select
         onClick={() => onSelect(task.id)}
         className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
       >

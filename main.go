@@ -26,6 +26,11 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+const (
+	closeRequestedEvent = "app:close-requested"
+	closeConfirmedEvent = "app:close-confirmed"
+)
+
 type appError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -174,25 +179,17 @@ func run() error {
 	tray.OnMouseEnter(refreshTray)
 	refreshTray()
 	var closing atomic.Bool
+	app.Event.On(closeConfirmedEvent, func(_ *application.CustomEvent) {
+		if closing.CompareAndSwap(false, true) {
+			app.Quit()
+		}
+	})
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if closing.Load() {
 			return
 		}
 		event.Cancel()
-		exitLabel, cancelLabel := closeDialogButtonLabels(runtime.GOOS)
-		dialog := app.Dialog.Question().
-			SetTitle("退出 yi-todo？").
-			SetMessage("关闭窗口将退出应用，确定要关闭吗？").
-			AttachToWindow(window)
-		exitButton := dialog.AddButton(exitLabel).OnClick(func() {
-			closing.Store(true)
-			app.Quit()
-		})
-		cancelButton := dialog.AddButton(cancelLabel)
-		dialog.SetDefaultButton(cancelButton)
-		dialog.SetCancelButton(cancelButton)
-		_ = exitButton
-		dialog.Show()
+		window.EmitEvent(closeRequestedEvent)
 	})
 
 	logger.Info("application started")
@@ -200,16 +197,6 @@ func run() error {
 		return fmt.Errorf("run Wails application: %w", err)
 	}
 	return nil
-}
-
-func closeDialogButtonLabels(goos string) (exitLabel string, cancelLabel string) {
-	if goos == "windows" {
-		// Wails 3 alpha maps the native MB_YESNO result back to the literal
-		// labels "Yes" and "No". Other labels render, but their callbacks are
-		// never matched after the Windows message box closes.
-		return "Yes", "No"
-	}
-	return "退出", "取消"
 }
 
 func applicationContext() context.Context {

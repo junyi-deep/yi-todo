@@ -114,10 +114,9 @@ func (s *TaskService) CreateTask(input CreateTaskInput) (TaskListItem, error) {
 	if err != nil {
 		return TaskListItem{}, fmt.Errorf("generate task id: %w", err)
 	}
-	localNow := s.now()
-	now := localNow.UTC()
-	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 9, 0, 0, 0, localNow.Location()).UTC()
-	due := start.Add(time.Hour)
+	now := s.now().UTC()
+	var start *time.Time
+	var due *time.Time
 	estimated := 25
 	priority := 0
 	important := false
@@ -138,10 +137,12 @@ func (s *TaskService) CreateTask(input CreateTaskInput) (TaskListItem, error) {
 			input.ProjectID = parent.ProjectID
 		}
 		if parent.StartAt != nil {
-			start = *parent.StartAt
+			value := *parent.StartAt
+			start = &value
 		}
 		if parent.DueAt != nil {
-			due = *parent.DueAt
+			value := *parent.DueAt
+			due = &value
 		}
 		if parent.EstimatedMinutes != nil {
 			estimated = *parent.EstimatedMinutes
@@ -158,8 +159,8 @@ func (s *TaskService) CreateTask(input CreateTaskInput) (TaskListItem, error) {
 		Priority:          priority,
 		Important:         important,
 		Urgent:            urgent,
-		StartAt:           &start,
-		DueAt:             &due,
+		StartAt:           start,
+		DueAt:             due,
 		EstimatedMinutes:  &estimated,
 		SortOrder:         float64(now.UnixMilli()),
 		CreatedAt:         now,

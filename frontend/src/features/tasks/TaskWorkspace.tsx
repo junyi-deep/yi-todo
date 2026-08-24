@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -23,6 +23,7 @@ import {
 import { TaskStatus } from "../../../bindings/github.com/junyiwu/yi-todo/internal/domain/models.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -96,6 +97,13 @@ function TaskWorkspaceContent() {
   const [startFilter, setStartFilter] = useState("");
   const [endFilter, setEndFilter] = useState("");
   const [sort, setSort] = useState<"default" | "due" | "start" | "title" | "created">("default");
+  const selectedAnchorRef = useRef({
+    taskId: null as string | null,
+    queryScope: "",
+    wasVisible: false,
+    item: undefined as TaskListItem | undefined,
+    rootIndex: -1,
+  });
   useEffect(() => {
     const timer = window.setTimeout(
       () => setDebouncedTitleFilter(titleFilter.trim()),
@@ -171,11 +179,80 @@ function TaskWorkspaceContent() {
     queryFn: () => taskAPI.get(selectedTaskId!),
     enabled: Boolean(selectedTaskId),
   });
+  const selectedSubtasksQuery = useQuery({
+    queryKey: ["subtasks", selectedTaskId],
+    queryFn: () => featureAPI.listSubtasks(selectedTaskId!),
+    enabled: Boolean(selectedTaskId && detailPanelOpen),
+  });
   const tasks = useMemo(
     () => tasksQuery.data?.pages.flat() ?? [],
     [tasksQuery.data],
   );
+  const selectedTask =
+    tasks.find((task) => task.id === selectedTaskId) ?? selectedTaskQuery.data;
+  const selectionScope = `${activeView}:${selectedProjectId ?? ""}:${selectedCategoryId ?? ""}:${JSON.stringify(filters)}`;
+  const selectedTaskIndex = selectedTaskId
+    ? tasks.findIndex((task) => task.id === selectedTaskId)
+    : -1;
+  if (
+    selectedAnchorRef.current.taskId !== selectedTaskId ||
+    selectedAnchorRef.current.queryScope !== selectionScope
+  ) {
+    selectedAnchorRef.current = {
+      taskId: selectedTaskId,
+      queryScope: selectionScope,
+      wasVisible: selectedTaskIndex >= 0,
+      item: selectedTaskIndex >= 0 ? tasks[selectedTaskIndex] : selectedTask,
+      rootIndex:
+        selectedTaskIndex >= 0 && !tasks[selectedTaskIndex].parentId
+          ? tasks
+              .slice(0, selectedTaskIndex)
+              .filter((task) => !task.parentId).length
+          : -1,
+    };
+  } else if (selectedTaskIndex >= 0) {
+    selectedAnchorRef.current.wasVisible = true;
+    selectedAnchorRef.current.item = tasks[selectedTaskIndex];
+    if (!tasks[selectedTaskIndex].parentId)
+      selectedAnchorRef.current.rootIndex = tasks
+        .slice(0, selectedTaskIndex)
+        .filter((task) => !task.parentId).length;
+  } else if (selectedTask) {
+    selectedAnchorRef.current.item = selectedTask;
+  }
   const visibleTasks = tasks;
+  const queriedTaskIDs = new Set(tasks.map((task) => task.id));
+  const retainedChildren = (selectedSubtasksQuery.data ?? []).filter(
+    (task) => !queriedTaskIDs.has(task.id),
+  );
+  const listTasksWithoutSelected = [...tasks, ...retainedChildren];
+  const selectedAnchor = selectedAnchorRef.current;
+  let listTasks = listTasksWithoutSelected;
+  if (
+    selectedAnchor.wasVisible &&
+    selectedAnchor.item &&
+    !queriedTaskIDs.has(selectedAnchor.item.id)
+  ) {
+    if (!selectedAnchor.item.parentId && selectedAnchor.rootIndex >= 0) {
+      let insertionIndex = listTasksWithoutSelected.length;
+      let rootsSeen = 0;
+      for (let index = 0; index < listTasksWithoutSelected.length; index += 1) {
+        if (listTasksWithoutSelected[index].parentId) continue;
+        if (rootsSeen === selectedAnchor.rootIndex) {
+          insertionIndex = index;
+          break;
+        }
+        rootsSeen += 1;
+      }
+      listTasks = [
+        ...listTasksWithoutSelected.slice(0, insertionIndex),
+        selectedAnchor.item,
+        ...listTasksWithoutSelected.slice(insertionIndex),
+      ];
+    } else {
+      listTasks = [...listTasksWithoutSelected, selectedAnchor.item];
+    }
+  }
   const hasActiveFilters =
     Boolean(titleFilter.trim()) ||
     statusFilter !== "all" ||
@@ -262,33 +339,62 @@ function TaskWorkspaceContent() {
     onMutate: async (task) => {
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<InfiniteData<TaskListItem[], number>>(queryKey);
+      const subtasksKey = ["subtasks", task.parentId] as const;
+      await queryClient.cancelQueries({ queryKey: subtasksKey });
+      const previousSubtasks = task.parentId
+        ? queryClient.getQueryData<TaskListItem[]>(subtasksKey)
+        : undefined;
       const completed = task.status !== TaskStatus.TaskStatusCompleted;
+      const optimisticTask = {
+        ...task,
+        status: completed
+          ? TaskStatus.TaskStatusCompleted
+          : TaskStatus.TaskStatusTodo,
+        progress: completed ? 100 : 0,
+        completedAt: completed ? new Date().toISOString() : null,
+      };
       queryClient.setQueryData<InfiniteData<TaskListItem[], number>>(queryKey, (current) =>
         current ? { ...current, pages: current.pages.map((page) => page.map((item) =>
           item.id === task.id
-            ? {
-                ...item,
-                status: completed
-                  ? TaskStatus.TaskStatusCompleted
-                  : TaskStatus.TaskStatusTodo,
-                progress: completed ? 100 : 0,
-                completedAt: completed ? new Date().toISOString() : null,
-              }
+            ? optimisticTask
             : item,
         )) } : current,
       );
-      return { previous };
+      if (task.parentId)
+        queryClient.setQueryData<TaskListItem[]>(subtasksKey, (current) =>
+          current?.map((item) =>
+            item.id === task.id ? optimisticTask : item,
+          ),
+        );
+      return { previous, previousSubtasks, subtasksKey };
     },
-    onSuccess: replaceTask,
+    onSuccess: (updated) => {
+      replaceTask(updated);
+      if (updated.parentId)
+        queryClient.setQueryData<TaskListItem[]>(
+          ["subtasks", updated.parentId],
+          (current) =>
+            current?.map((task) =>
+              task.id === updated.id ? updated : task,
+            ),
+        );
+    },
     onError: (error, _variables, context) => {
       if (context?.previous)
         queryClient.setQueryData(queryKey, context.previous);
+      if (context?.previousSubtasks)
+        queryClient.setQueryData(
+          context.subtasksKey,
+          context.previousSubtasks,
+        );
       setNotice(errorMessage(error));
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey });
       void queryClient.invalidateQueries({ queryKey: ["task-count"] });
       void queryClient.invalidateQueries({ queryKey: ["task-table-count"] });
+      void queryClient.invalidateQueries({ queryKey: ["subtasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["selected-task"] });
     },
   });
 
@@ -331,8 +437,6 @@ function TaskWorkspaceContent() {
     metadataMutation.isPending ||
     completionMutation.isPending ||
     deleteMutation.isPending;
-  const selectedTask =
-    tasks.find((task) => task.id === selectedTaskId) ?? selectedTaskQuery.data;
   const heading =
     activeView === "project"
       ? (projectsQuery.data?.find((project) => project.id === selectedProjectId)
@@ -368,7 +472,8 @@ function TaskWorkspaceContent() {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, [contenteditable="true"]')) return;
-      if (event.key === "Escape") closeDetail();
+      if (event.key === "Escape")
+        window.dispatchEvent(new Event("yi-todo:request-close-detail"));
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         focusNewTask();
@@ -387,7 +492,6 @@ function TaskWorkspaceContent() {
         event.preventDefault();
         completionMutation.mutate(selectedTask);
       }
-      if (event.key === "Enter" && selectedTask) selectTask(selectedTask.id);
       if (
         (event.key === "ArrowDown" || event.key === "ArrowUp") &&
         tasks.length > 0
@@ -490,30 +594,22 @@ function TaskWorkspaceContent() {
                   )}
                 </span>
               </label>
-              <label className="grid gap-1">
+              <div className="grid gap-1">
                 <span className="text-[11px] text-muted-foreground">状态</span>
-                <select className="h-7 min-w-24 rounded-md border bg-background px-2 outline-none" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
-                  <option value="all">全部</option><option value="todo">待办</option><option value="in_progress">进行中</option><option value="completed">已完成</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
+                <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as typeof statusFilter)}><SelectTrigger size="sm" className="min-w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部</SelectItem><SelectItem value="todo">待办</SelectItem><SelectItem value="in_progress">进行中</SelectItem><SelectItem value="completed">已完成</SelectItem></SelectContent></Select>
+              </div>
+              <div className="grid gap-1">
                 <span className="text-[11px] text-muted-foreground">重要</span>
-                <select className="h-7 min-w-20 rounded-md border bg-background px-2 outline-none" value={importantFilter} onChange={(event) => setImportantFilter(event.target.value as typeof importantFilter)}>
-                  <option value="all">全部</option><option value="yes">是</option><option value="no">否</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
+                <Select value={importantFilter} onValueChange={(value) => setImportantFilter(value as typeof importantFilter)}><SelectTrigger size="sm" className="min-w-20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部</SelectItem><SelectItem value="yes">是</SelectItem><SelectItem value="no">否</SelectItem></SelectContent></Select>
+              </div>
+              <div className="grid gap-1">
                 <span className="text-[11px] text-muted-foreground">紧急</span>
-                <select className="h-7 min-w-20 rounded-md border bg-background px-2 outline-none" value={urgentFilter} onChange={(event) => setUrgentFilter(event.target.value as typeof urgentFilter)}>
-                  <option value="all">全部</option><option value="yes">是</option><option value="no">否</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
+                <Select value={urgentFilter} onValueChange={(value) => setUrgentFilter(value as typeof urgentFilter)}><SelectTrigger size="sm" className="min-w-20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部</SelectItem><SelectItem value="yes">是</SelectItem><SelectItem value="no">否</SelectItem></SelectContent></Select>
+              </div>
+              <div className="grid gap-1">
                 <span className="text-[11px] text-muted-foreground">排序方式</span>
-                <select className="h-7 min-w-28 rounded-md border bg-background px-2 outline-none" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
-                  <option value="default">默认顺序</option><option value="start">开始时间</option><option value="due">结束时间</option><option value="title">任务名称</option><option value="created">创建时间</option>
-                </select>
-              </label>
+                <Select value={sort} onValueChange={(value) => setSort(value as typeof sort)}><SelectTrigger size="sm" className="min-w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="default">默认顺序</SelectItem><SelectItem value="start">开始时间</SelectItem><SelectItem value="due">结束时间</SelectItem><SelectItem value="title">任务名称</SelectItem><SelectItem value="created">创建时间</SelectItem></SelectContent></Select>
+              </div>
             </div>
             <div className="mt-2 flex flex-wrap items-end gap-x-3 gap-y-2 border-t border-border/60 pt-2">
               <label className="grid gap-1">
@@ -622,8 +718,8 @@ function TaskWorkspaceContent() {
           ) : (
             <TaskList
               key={`${activeView}:${selectedProjectId ?? ""}:${selectedCategoryId ?? ""}:${JSON.stringify(filters)}`}
-              tasks={visibleTasks}
-              total={taskCountQuery.data ?? tasks.length}
+              tasks={listTasks}
+              total={Math.max(taskCountQuery.data ?? tasks.length, listTasks.length)}
               hasMore={tasksQuery.hasNextPage}
               loadingMore={tasksQuery.isFetchingNextPage}
               onLoadMore={tasksQuery.fetchNextPage}
@@ -647,7 +743,10 @@ function TaskWorkspaceContent() {
           onMetadata={async (input) => {
             await metadataMutation.mutateAsync(input);
           }}
-          onToggle={(task) => completionMutation.mutate(task)}
+          onToggle={async (task) => {
+            await completionMutation.mutateAsync(task);
+          }}
+          onNavigate={selectTask}
           onDelete={(id) => deleteMutation.mutate(id)}
         />
       )}

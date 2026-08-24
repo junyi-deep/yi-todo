@@ -41,6 +41,18 @@ type UpdateCategoryInput struct {
 	ParentID *string `json:"parentId"`
 }
 
+type ReorderProjectInput struct {
+	ID         string   `json:"id"`
+	CategoryID string   `json:"categoryId"`
+	OrderedIDs []string `json:"orderedIds"`
+}
+
+type ReorderCategoryInput struct {
+	ID         string   `json:"id"`
+	ParentID   *string  `json:"parentId"`
+	OrderedIDs []string `json:"orderedIds"`
+}
+
 func NewProjectService(repository repository.ProjectRepository) *ProjectService {
 	return &ProjectService{repository: repository, ctx: context.Background(), now: time.Now}
 }
@@ -83,6 +95,16 @@ func (s *ProjectService) UpdateProject(input UpdateProjectInput) (domain.Project
 	}
 	now := s.now().UTC()
 	return s.repository.Update(s.ctx, input.ID, name, input.CategoryID, float64(now.UnixMilli()), now)
+}
+
+func (s *ProjectService) ReorderProject(input ReorderProjectInput) error {
+	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.CategoryID) == "" {
+		return fmt.Errorf("%w: project and category are required", domain.ErrValidation)
+	}
+	if err := validateReorderIDs(input.ID, input.OrderedIDs); err != nil {
+		return err
+	}
+	return s.repository.Reorder(s.ctx, input.ID, input.CategoryID, input.OrderedIDs, s.now().UTC())
 }
 
 func (s *ProjectService) ArchiveProject(id string) error {
@@ -138,6 +160,48 @@ func (s *ProjectService) UpdateCategory(input UpdateCategoryInput) (domain.Categ
 	}
 	now := s.now().UTC()
 	return s.repository.UpdateCategory(s.ctx, input.ID, name, input.ParentID, float64(now.UnixMilli()), now)
+}
+
+func (s *ProjectService) ReorderCategory(input ReorderCategoryInput) error {
+	input.ID = strings.TrimSpace(input.ID)
+	if input.ID == "" {
+		return fmt.Errorf("%w: category is required", domain.ErrValidation)
+	}
+	if input.ParentID != nil {
+		parentID := strings.TrimSpace(*input.ParentID)
+		if parentID == "" {
+			input.ParentID = nil
+		} else if parentID == input.ID {
+			return fmt.Errorf("%w: category cannot be its own parent", domain.ErrValidation)
+		} else {
+			input.ParentID = &parentID
+		}
+	}
+	if err := validateReorderIDs(input.ID, input.OrderedIDs); err != nil {
+		return err
+	}
+	return s.repository.ReorderCategory(s.ctx, input.ID, input.ParentID, input.OrderedIDs, s.now().UTC())
+}
+
+func validateReorderIDs(movedID string, orderedIDs []string) error {
+	if len(orderedIDs) == 0 {
+		return fmt.Errorf("%w: ordered ids are required", domain.ErrValidation)
+	}
+	seen := make(map[string]struct{}, len(orderedIDs))
+	for _, id := range orderedIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return fmt.Errorf("%w: ordered id cannot be empty", domain.ErrValidation)
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("%w: ordered ids must be unique", domain.ErrValidation)
+		}
+		seen[id] = struct{}{}
+	}
+	if _, exists := seen[movedID]; !exists {
+		return fmt.Errorf("%w: ordered ids must include the moved item", domain.ErrValidation)
+	}
+	return nil
 }
 
 func (s *ProjectService) DeleteCategory(id string) error {

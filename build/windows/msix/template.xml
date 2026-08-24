@@ -17,7 +17,7 @@
         PackageDisplayName="yi-todo"
         PublisherName="CN=yi-todo"
         PublisherDisplayName="yi-todo"
-        Version="0.0.5.0"
+        Version="0.0.6.0"
         PackageDescription="Local-first desktop task manager">
         <Capabilities>
             <Capability Name="runFullTrust" />

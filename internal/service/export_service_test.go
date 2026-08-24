@@ -78,7 +78,8 @@ func TestCategoryViewIncludesNestedProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tasks.CreateTask(CreateTaskInput{Title: "分类任务", ProjectID: &project.ID}); err != nil {
+	task, err := tasks.CreateTask(CreateTaskInput{Title: "分类任务", ProjectID: &project.ID})
+	if err != nil {
 		t.Fatal(err)
 	}
 	items, err := tasks.ListTasks(TaskQuery{View: "category", CategoryID: &root.ID, Limit: 50})
@@ -86,6 +87,11 @@ func TestCategoryViewIncludesNestedProjects(t *testing.T) {
 		t.Fatalf("category tasks = %v, err=%v", items, err)
 	}
 	from := time.Now().Add(-24 * time.Hour)
+	start := time.Now()
+	due := start.Add(time.Hour)
+	if _, err := tasks.UpdateTaskMetadata(UpdateTaskMetadataInput{ID: task.ID, ProjectID: task.ProjectID, StartAt: &start, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
 	items, err = tasks.ListTasks(TaskQuery{View: "category", CategoryID: &root.ID, StartFrom: &from, Limit: 50})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("filtered category tasks = %v, err=%v", items, err)

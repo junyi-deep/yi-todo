@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { FormEvent, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarClock, CalendarDays, ChartNoAxesCombined, CheckCircle2,
@@ -18,6 +18,7 @@ import { zhCN } from "../../i18n/zh-CN";
 import { useUIStore, type TaskView } from "../../stores/uiStore";
 import { PomodoroWidget } from "../../features/pomodoro/PomodoroWidget";
 import { sidebarMarkURL } from "../../assets/sidebarMark";
+import { usePersistentCategoryExpansion } from "../../hooks/usePersistentCategoryExpansion";
 
 const views: Array<{ id: TaskView; label: string; icon: typeof Inbox }> = [
   { id: "inbox", label: zhCN.inbox, icon: Inbox },
@@ -31,6 +32,9 @@ type CreateTarget = { kind: "category"; parentId: string | null } | { kind: "pro
 type EditTarget =
   | { kind: "category"; mode: "rename" | "move"; item: Category }
   | { kind: "project"; mode: "rename" | "move"; item: Project };
+type NavigationDrag = { kind: "category" | "project"; id: string };
+type DropPosition = "before" | "inside" | "after";
+type NavigationDrop = NavigationDrag & { position: DropPosition };
 
 export function Sidebar() {
   const activeView = useUIStore((state) => state.activeView);
@@ -46,7 +50,6 @@ export function Sidebar() {
   const toggleSidebar = useUIStore((state) => state.toggleSidebar);
   const client = useQueryClient();
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [createTarget, setCreateTarget] = useState<CreateTarget | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
@@ -54,13 +57,16 @@ export function Sidebar() {
   const [destinationId, setDestinationId] = useState("");
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null);
   const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<Category | null>(null);
+  const [dragged, setDragged] = useState<NavigationDrag | null>(null);
+  const [dropTarget, setDropTarget] = useState<NavigationDrop | null>(null);
+  const [rootDropActive, setRootDropActive] = useState(false);
+  const [dragError, setDragError] = useState("");
   const categories = useQuery({ queryKey: ["categories"], queryFn: projectAPI.listCategories });
   const projects = useQuery({ queryKey: ["projects"], queryFn: projectAPI.list });
-
-  useEffect(() => {
-    if ((categories.data ?? []).length)
-      setExpanded((current) => current.size ? current : new Set((categories.data ?? []).map((item) => item.id)));
-  }, [categories.data]);
+  const { expanded, toggleCategory, expandCategory } = usePersistentCategoryExpansion(
+    categories.data ?? [],
+    !categories.isPending,
+  );
 
   const refreshNavigation = () => {
     client.invalidateQueries({ queryKey: ["categories"] });
@@ -82,6 +88,8 @@ export function Sidebar() {
     onSuccess: () => {
       refreshNavigation();
       refreshTaskViews();
+      if (createTarget?.kind === "category" && createTarget.parentId)
+        expandCategory(createTarget.parentId);
       setCreateTarget(null);
       setName("");
     },
@@ -100,7 +108,7 @@ export function Sidebar() {
       refreshNavigation();
       refreshTaskViews();
       if (editTarget?.mode === "move" && destinationId !== "__root__")
-        setExpanded((current) => new Set(current).add(destinationId));
+        expandCategory(destinationId);
       setEditTarget(null);
       setName("");
       setDestinationId("");
@@ -135,6 +143,93 @@ export function Sidebar() {
     visit(id);
     return result;
   };
+  const projectsInCategory = (categoryId: string) =>
+    (projects.data ?? []).filter((project) => project.categoryId === categoryId);
+  const insertAtTarget = (ids: string[], movedID: string, targetID: string | null, position: DropPosition) => {
+    const ordered = ids.filter((id) => id !== movedID);
+    if (!targetID || position === "inside") return [...ordered, movedID];
+    const targetIndex = ordered.indexOf(targetID);
+    if (targetIndex < 0) return [...ordered, movedID];
+    ordered.splice(targetIndex + (position === "after" ? 1 : 0), 0, movedID);
+    return ordered;
+  };
+  const reorderNavigation = useMutation({
+    mutationFn: async ({ item, target }: { item: NavigationDrag; target: NavigationDrop | null }) => {
+      if (item.kind === "category") {
+        if (target?.kind === "project") throw new Error("分类不能移动到清单中");
+        const targetCategory = target ? (categories.data ?? []).find((category) => category.id === target.id) : undefined;
+        const parentId = targetCategory && target?.position === "inside" ? targetCategory.id : (targetCategory?.parentId ?? null);
+        if (parentId && descendantIds(item.id).has(parentId)) throw new Error("分类不能移动到自身或子分类中");
+        const siblings = childCategories(parentId).map((category) => category.id);
+        const orderedIds = insertAtTarget(siblings, item.id, targetCategory?.id ?? null, target?.position ?? "inside");
+        await projectAPI.reorderCategory(item.id, parentId, orderedIds);
+        return parentId;
+      }
+      let categoryId: string;
+      let targetProject: Project | undefined;
+      if (target?.kind === "category") {
+        categoryId = target.id;
+      } else if (target?.kind === "project") {
+        targetProject = (projects.data ?? []).find((project) => project.id === target.id);
+        if (!targetProject) throw new Error("目标清单不存在");
+        categoryId = targetProject.categoryId;
+      } else {
+        throw new Error("清单必须归属分类");
+      }
+      const siblings = projectsInCategory(categoryId).map((project) => project.id);
+      const orderedIds = insertAtTarget(siblings, item.id, targetProject?.id ?? null, target?.position ?? "inside");
+      await projectAPI.reorderProject(item.id, categoryId, orderedIds);
+      return categoryId;
+    },
+    onSuccess: (destinationId) => {
+      refreshNavigation();
+      refreshTaskViews();
+      if (destinationId) expandCategory(destinationId);
+      setDragError("");
+    },
+    onError: (error) => setDragError(errorMessage(error)),
+    onSettled: () => {
+      setDragged(null);
+      setDropTarget(null);
+      setRootDropActive(false);
+    },
+  });
+  const beginDrag = (event: DragEvent<HTMLElement>, item: NavigationDrag) => {
+    if (normalizedSearch || reorderNavigation.isPending) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
+    setDragged(item);
+    setRootDropActive(false);
+    setDragError("");
+  };
+  const categoryDropPosition = (event: DragEvent<HTMLElement>): DropPosition => {
+    if (dragged?.kind === "project") return "inside";
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    return ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
+  };
+  const showDropTarget = (event: DragEvent<HTMLElement>, target: NavigationDrop) => {
+    if (!dragged || dragged.id === target.id || (dragged.kind === "category" && target.kind === "project")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    setRootDropActive(false);
+    setDropTarget(target);
+  };
+  const finishDrop = (event: DragEvent<HTMLElement>, target: NavigationDrop | null) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (dragged) reorderNavigation.mutate({ item: dragged, target });
+  };
+  const dropIndicator = (kind: NavigationDrag["kind"], id: string) => {
+    if (dropTarget?.kind !== kind || dropTarget.id !== id) return "";
+    if (dropTarget.position === "before") return "border-t-2 border-t-primary";
+    if (dropTarget.position === "after") return "border-b-2 border-b-primary";
+    return "bg-sidebar-accent ring-1 ring-inset ring-primary/40";
+  };
   const flattenedCategories = useMemo(() => {
     const all = categories.data ?? [];
     const output: Array<{ item: Category; depth: number }> = [];
@@ -166,7 +261,15 @@ export function Sidebar() {
   const renderProject = (project: Project, depth: number) => (
     <ContextMenu key={project.id}>
       <ContextMenuTrigger asChild>
-        <div style={{ paddingLeft: 22 + depth * 10 }}>
+        <div
+          draggable={!normalizedSearch && !reorderNavigation.isPending}
+          onDragStart={(event) => beginDrag(event, { kind: "project", id: project.id })}
+          onDragEnd={() => { setDragged(null); setDropTarget(null); setRootDropActive(false); }}
+          onDragOver={(event) => showDropTarget(event, { kind: "project", id: project.id, position: event.clientY < event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2 ? "before" : "after" })}
+          onDrop={(event) => finishDrop(event, { kind: "project", id: project.id, position: event.clientY < event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2 ? "before" : "after" })}
+          className={cn("cursor-grab rounded active:cursor-grabbing", dropIndicator("project", project.id))}
+          style={{ paddingLeft: 22 + depth * 10 }}
+        >
           <Button variant="ghost" size="sm" className={cn("h-7 w-full min-w-0 justify-start px-2 text-[12px] font-normal", workspacePage === "tasks" && activeView === "project" && selectedProjectId === project.id && "bg-sidebar-accent font-medium")} onClick={() => setActiveView("project", project.id)}>
             <List className="size-3.5" /><span className="truncate">{project.name}</span>
           </Button>
@@ -190,8 +293,15 @@ export function Sidebar() {
       <div key={category.id}>
         <ContextMenu>
           <ContextMenuTrigger asChild>
-            <div className="flex items-center">
-              <Button variant="ghost" size="icon-xs" className="shrink-0" style={{ marginLeft: depth * 10 }} aria-label={open ? "收起分类" : "展开分类"} onClick={() => setExpanded((current) => { const next = new Set(current); open ? next.delete(category.id) : next.add(category.id); return next; })}>
+            <div
+              draggable={!normalizedSearch && !reorderNavigation.isPending}
+              onDragStart={(event) => beginDrag(event, { kind: "category", id: category.id })}
+              onDragEnd={() => { setDragged(null); setDropTarget(null); setRootDropActive(false); }}
+              onDragOver={(event) => showDropTarget(event, { kind: "category", id: category.id, position: categoryDropPosition(event) })}
+              onDrop={(event) => finishDrop(event, { kind: "category", id: category.id, position: categoryDropPosition(event) })}
+              className={cn("flex cursor-grab items-center rounded active:cursor-grabbing", dropIndicator("category", category.id))}
+            >
+              <Button variant="ghost" size="icon-xs" className="shrink-0" style={{ marginLeft: depth * 10 }} aria-label={open ? "收起分类" : "展开分类"} onClick={() => toggleCategory(category.id)}>
                 {open ? <ChevronDown /> : <ChevronRight />}
               </Button>
               <Button variant="ghost" size="sm" className={cn("h-8 min-w-0 flex-1 justify-start px-1.5 text-[12px] font-normal", workspacePage === "tasks" && activeView === "category" && selectedCategoryId === category.id && "bg-sidebar-accent font-medium")} onClick={() => setActiveView("category", category.id)}>
@@ -228,15 +338,44 @@ export function Sidebar() {
   return (
     <aside className="relative flex shrink-0 flex-col border-r bg-sidebar px-2 pb-2 pt-2 text-sidebar-foreground" style={{ width: collapsed ? 48 : sidebarWidth }}>
       <div className={cn("mb-2 flex h-10 items-center", collapsed ? "justify-center" : "justify-between px-1")}>
-        {!collapsed && <div className="flex min-w-0 items-center gap-2"><img src={sidebarMarkURL} alt="" className="size-8 rounded-lg" decoding="async" draggable={false} /><span className="truncate text-sm font-semibold tracking-tight">yi-todo</span></div>}
+        {!collapsed && <button type="button" className="flex min-w-0 items-center gap-2 rounded-lg text-left outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring" title="收起侧栏" aria-label="收起侧栏" onClick={toggleSidebar}><img src={sidebarMarkURL} alt="" className="size-8 rounded-lg" decoding="async" draggable={false} /><span className="truncate text-sm font-semibold tracking-tight">yi-todo</span></button>}
         <Button variant="ghost" size="icon-sm" title={collapsed ? "展开侧栏" : "收起侧栏"} onClick={toggleSidebar}>{collapsed ? <ChevronRight /> : <ChevronLeft />}</Button>
       </div>
       <nav aria-label="任务视图" className="space-y-0.5">{views.map(({ id, label, icon: Icon }) => <Button key={id} variant="ghost" size="sm" className={cn("h-8 w-full justify-start px-2 text-[13px] font-normal", workspacePage === "tasks" && activeView === id && "bg-sidebar-accent font-medium")} onClick={() => setActiveView(id)}><Icon />{!collapsed && label}</Button>)}</nav>
       <Separator className="my-2" />
       {!collapsed && <>
-        <div className="flex h-7 items-center justify-between px-2"><span className="text-[11px] font-medium text-muted-foreground">分类与清单 · 右键管理</span><Button variant="ghost" size="xs" onClick={() => setCreateTarget({ kind: "category", parentId: null })}>新建分类</Button></div>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div className="flex h-7 cursor-default items-center px-2"><span className="text-[11px] font-medium text-muted-foreground">分类与清单 · 右键管理</span></div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={() => setCreateTarget({ kind: "category", parentId: null })}><FolderPlus />新建分类</ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
         <div className="relative mb-1"><Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索分类或清单" className="h-7 border-0 bg-sidebar-accent/45 pl-7 text-[11px] shadow-none" /></div>
-        <div className="min-h-0 flex-1 overflow-auto">{childCategories(null).map((category) => renderCategory(category, 0))}</div>
+        {dragError && <p className="px-2 py-1 text-[11px] text-destructive">{dragError}</p>}
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+          <div>{childCategories(null).map((category) => renderCategory(category, 0))}</div>
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div
+                className={cn("min-h-10 flex-1 rounded", rootDropActive && "bg-sidebar-accent/50 ring-1 ring-inset ring-primary/30")}
+                onDragOver={(event) => {
+                  if (dragged?.kind !== "category") return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropTarget(null);
+                  setRootDropActive(true);
+                }}
+                onDrop={(event) => finishDrop(event, null)}
+                aria-label="分类与清单空白区域"
+              />
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => setCreateTarget({ kind: "category", parentId: null })}><FolderPlus />新建顶级分类</ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        </div>
       </>}
       <div className="mt-auto border-t pt-2">{!collapsed && <PomodoroWidget />}<Button variant="ghost" size="sm" className={cn("h-8 w-full justify-start px-2 text-[13px] font-normal", workspacePage === "focus" && "bg-sidebar-accent font-medium")} onClick={openFocus}><ChartNoAxesCombined />{!collapsed && "专注统计"}</Button><Separator className="my-1.5" /><Button variant="ghost" size="sm" className={cn("h-8 w-full justify-start px-2 text-[13px] font-normal", workspacePage === "settings" && "bg-sidebar-accent font-medium")} onClick={openSettings}><Settings />{!collapsed && "设置与数据"}</Button></div>
       {!collapsed && <div

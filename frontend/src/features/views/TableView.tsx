@@ -10,6 +10,7 @@ import { ArrowDownUp, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { TaskView } from "../../stores/uiStore";
 import {
   errorMessage,
@@ -123,11 +124,9 @@ export function TableView({ view, projectId, categoryId, filters, onSort, onSele
       </div>
       <footer className="flex h-10 shrink-0 items-center justify-end gap-2 border-t px-3 text-xs text-muted-foreground">
         <span>共 {total} 条 · 第 {page + 1}/{totalPages} 页</span>
-        <label className="flex items-center gap-1">每页
-          <select className="h-7 rounded-md border bg-background px-1.5 outline-none" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
-            {[25, 50, 100, 200].map((size) => <option key={size} value={size}>{size}</option>)}
-          </select>
-        </label>
+        <div className="flex items-center gap-1">每页
+          <Select value={String(pageSize)} onValueChange={(value) => setPageSize(Number(value))}><SelectTrigger size="sm" className="w-20"><SelectValue /></SelectTrigger><SelectContent>{[25, 50, 100, 200].map((size) => <SelectItem key={size} value={String(size)}>{size}</SelectItem>)}</SelectContent></Select>
+        </div>
         <form className="flex items-center gap-1" onSubmit={(event) => { event.preventDefault(); const target = Math.min(totalPages, Math.max(1, Number(jumpPage) || 1)); setPage(target - 1); }}>
           <span>跳至</span>
           <Input type="number" min={1} max={totalPages} value={jumpPage} onChange={(event) => setJumpPage(event.target.value)} className="h-7 w-16 px-2 text-center text-xs shadow-none focus-visible:ring-0" aria-label="跳转页码" />

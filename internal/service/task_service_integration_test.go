@@ -148,6 +148,83 @@ func TestProjectAndCategoryCanBeRenamedAndMoved(t *testing.T) {
 	}
 }
 
+func TestProjectAndCategoryDragOrderPersists(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "navigation-reorder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	projects := NewProjectService(dbsqlite.NewProjectRepository(db))
+	roots, err := projects.ListCategories()
+	if err != nil || len(roots) == 0 {
+		t.Fatalf("default category = %+v, err=%v", roots, err)
+	}
+	parentID := roots[0].ID
+	first, err := projects.CreateCategory(CreateCategoryInput{Name: "第一分类", ParentID: &parentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := projects.CreateCategory(CreateCategoryInput{Name: "第二分类", ParentID: &parentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.ReorderCategory(ReorderCategoryInput{ID: second.ID, ParentID: &parentID, OrderedIDs: []string{second.ID, first.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	categories, err := projects.ListCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]domain.Category, 0, 2)
+	for _, category := range categories {
+		if category.ParentID != nil && *category.ParentID == parentID {
+			children = append(children, category)
+		}
+	}
+	if len(children) != 2 || children[0].ID != second.ID || children[1].ID != first.ID {
+		t.Fatalf("category order = %+v", children)
+	}
+
+	firstProject, err := projects.CreateProject(CreateProjectInput{Name: "第一清单", CategoryID: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProject, err := projects.CreateProject(CreateProjectInput{Name: "第二清单", CategoryID: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.ReorderProject(ReorderProjectInput{ID: secondProject.ID, CategoryID: first.ID, OrderedIDs: []string{secondProject.ID, firstProject.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.ReorderProject(ReorderProjectInput{ID: firstProject.ID, CategoryID: second.ID, OrderedIDs: []string{firstProject.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := projects.ListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]domain.Project, len(lists))
+	for _, project := range lists {
+		byID[project.ID] = project
+	}
+	if byID[firstProject.ID].CategoryID != second.ID || byID[secondProject.ID].CategoryID != first.ID {
+		t.Fatalf("project destinations = %+v", byID)
+	}
+
+	grandchild, err := projects.CreateCategory(CreateCategoryInput{Name: "孙分类", ParentID: &first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.ReorderCategory(ReorderCategoryInput{ID: first.ID, ParentID: &grandchild.ID, OrderedIDs: []string{first.ID}}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("moving category into descendant error = %v, want conflict", err)
+	}
+}
+
 func TestDeleteNonEmptyCategoryTreeKeepsTasks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -204,7 +281,7 @@ func TestDeleteNonEmptyCategoryTreeKeepsTasks(t *testing.T) {
 	}
 }
 
-func TestTaskDefaultsUseLocalDayAndChildInheritsScheduling(t *testing.T) {
+func TestTaskDefaultsHaveNoScheduleAndChildInheritsScheduling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "task-defaults.db"))
@@ -222,11 +299,13 @@ func TestTaskDefaultsUseLocalDayAndChildInheritsScheduling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parent.StartAt == nil || parent.StartAt.In(shanghai).Day() != 21 || parent.StartAt.In(shanghai).Hour() != 9 {
-		t.Fatalf("local default start = %v", parent.StartAt)
+	if parent.StartAt != nil || parent.DueAt != nil {
+		t.Fatalf("new task schedule = %v - %v, want empty", parent.StartAt, parent.DueAt)
 	}
+	start := time.Date(2026, 8, 21, 13, 30, 0, 0, shanghai).UTC()
+	due := time.Date(2026, 8, 21, 22, 0, 0, 0, shanghai).UTC()
 	estimated := 90
-	parent, err = tasks.UpdateTaskMetadata(UpdateTaskMetadataInput{ID: parent.ID, Priority: 1, Important: true, Urgent: true, StartAt: parent.StartAt, DueAt: parent.DueAt, EstimatedMinutes: &estimated})
+	parent, err = tasks.UpdateTaskMetadata(UpdateTaskMetadataInput{ID: parent.ID, Priority: 1, Important: true, Urgent: true, StartAt: &start, DueAt: &due, EstimatedMinutes: &estimated})
 	if err != nil {
 		t.Fatal(err)
 	}

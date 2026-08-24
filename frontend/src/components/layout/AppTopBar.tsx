@@ -71,7 +71,7 @@ export function AppTopBar() {
   if (mode !== "normal") {
     return (
       <header
-        className="app-drag-region bg-sidebar/95 flex h-9 shrink-0 items-center border-b px-1 backdrop-blur"
+        className="app-drag-region bg-sidebar/95 relative z-50 flex h-9 shrink-0 items-center border-b px-1 backdrop-blur"
         onMouseDownCapture={prepareDoubleClick}
         onDoubleClick={handleDoubleClick}
       >
@@ -130,7 +130,7 @@ export function AppTopBar() {
 
   return (
     <header
-      className="app-drag-region bg-sidebar/95 flex h-9 shrink-0 items-center border-b px-2 backdrop-blur"
+      className="app-drag-region bg-sidebar/95 relative z-50 flex h-9 shrink-0 items-center border-b px-2 backdrop-blur"
       onMouseDownCapture={prepareDoubleClick}
       onDoubleClick={handleDoubleClick}
     >

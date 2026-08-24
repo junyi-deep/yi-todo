@@ -1,8 +1,8 @@
 import {
   ClipboardEvent,
   DragEvent,
-  FormEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,7 +54,8 @@ type Props = {
   onClose: () => void;
   onSave: (id: string, title: string) => Promise<void>;
   onMetadata: (input: UpdateTaskMetadataInput) => Promise<void>;
-  onToggle: (task: TaskListItem) => void;
+  onToggle: (task: TaskListItem) => Promise<void>;
+  onNavigate: (id: string) => void;
   onDelete: (id: string) => void;
 };
 
@@ -70,6 +71,15 @@ function dateValue(value: string): string | null {
   return new Date(value).toISOString();
 }
 
+function todaySchedule(): { start: string; due: string } {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const due = new Date(now);
+  due.setHours(22, 0, 0, 0);
+  if (due < now) due.setTime(now.getTime());
+  return { start: dateInput(now), due: dateInput(due) };
+}
+
 export function TaskDetailPanel({
   task,
   pending,
@@ -77,6 +87,7 @@ export function TaskDetailPanel({
   onSave,
   onMetadata,
   onToggle,
+  onNavigate,
   onDelete,
 }: Props) {
   const queryClient = useQueryClient();
@@ -107,6 +118,10 @@ export function TaskDetailPanel({
   const [descriptionOpen, setDescriptionOpen] = useState(true);
   const [attachmentsOpen, setAttachmentsOpen] = useState(true);
   const [remindersOpen, setRemindersOpen] = useState(false);
+  const [togglingSubtasks, setTogglingSubtasks] = useState<Set<string>>(new Set());
+  const hydrationKeyRef = useRef("");
+  const hydratingRef = useRef(true);
+  const lastSavedSignatureRef = useRef("");
 
   const detailQuery = useQuery({
     queryKey: ["task", task?.id],
@@ -117,6 +132,11 @@ export function TaskDetailPanel({
     queryKey: ["subtasks", task?.id],
     queryFn: () => featureAPI.listSubtasks(task!.id),
     enabled: Boolean(task?.id),
+  });
+  const parentQuery = useQuery({
+    queryKey: ["task-parent", task?.parentId],
+    queryFn: () => taskAPI.get(task!.parentId!),
+    enabled: Boolean(task?.parentId),
   });
   const attachmentsQuery = useQuery({
     queryKey: ["attachments", task?.id],
@@ -132,6 +152,17 @@ export function TaskDetailPanel({
   useEffect(() => {
     const fullTask = detailQuery.data?.task ?? task;
     if (!fullTask) return;
+    const hydrationKey = `${fullTask.id}:${detailQuery.data?.task ? "detail" : "list"}`;
+    if (hydrationKeyRef.current === hydrationKey) return;
+    hydrationKeyRef.current = hydrationKey;
+    hydratingRef.current = true;
+    const nextDescription = detailQuery.data?.task
+      ? {
+          format: "markdown" as const,
+          source: detailQuery.data.task.descriptionSource,
+          plain: detailQuery.data.task.descriptionPlain,
+        }
+      : { format: "markdown" as const, source: "", plain: "" };
     setTitle(fullTask.title);
     setProjectId(fullTask.projectId);
     setPriority(fullTask.priority);
@@ -144,13 +175,90 @@ export function TaskDetailPanel({
     const estimated =
       "estimatedMinutes" in fullTask ? fullTask.estimatedMinutes : null;
     setEstimatedMinutes(estimated == null ? "" : String(estimated));
-    if (detailQuery.data?.task)
-      setDescription({
-        format: "markdown",
-        source: detailQuery.data.task.descriptionSource,
-        plain: detailQuery.data.task.descriptionPlain,
+    setEstimatedUnit("minute");
+    setDescription(nextDescription);
+    lastSavedSignatureRef.current = JSON.stringify({
+      title: fullTask.title.trim(),
+      projectId: fullTask.projectId,
+      priority: fullTask.priority,
+      important: fullTask.important,
+      urgent: fullTask.urgent,
+      startAt: fullTask.startAt ? new Date(String(fullTask.startAt)).toISOString() : null,
+      dueAt: fullTask.dueAt ? new Date(String(fullTask.dueAt)).toISOString() : null,
+      progress: fullTask.progress,
+      estimatedMinutes: estimated,
+      status: fullTask.status,
+      description: nextDescription,
+    });
+    setDetailNotice("");
+    const timer = window.setTimeout(() => { hydratingRef.current = false; });
+    return () => window.clearTimeout(timer);
+  }, [detailQuery.data, task?.id]);
+
+  const estimatedValue =
+    estimatedMinutes === ""
+      ? null
+      : Math.round(
+          Number(estimatedMinutes) *
+            (estimatedUnit === "minute" ? 1 : estimatedUnit === "hour" ? 60 : 1440),
+        );
+  const draftSignature = JSON.stringify({
+    title: title.trim(),
+    projectId,
+    priority,
+    important,
+    urgent,
+    startAt: dateValue(startAt),
+    dueAt: dateValue(dueAt),
+    progress,
+    estimatedMinutes: estimatedValue,
+    status,
+    description,
+  });
+
+  const persistDraft = async (signature = draftSignature) => {
+    if (!task || hydratingRef.current || signature === lastSavedSignatureRef.current) return;
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setDetailNotice("任务名称不能为空");
+      return;
+    }
+    try {
+      setDetailNotice("正在自动保存…");
+      if (trimmed !== task.title) await onSave(task.id, trimmed);
+      await onMetadata({
+        id: task.id,
+        projectId,
+        priority,
+        important,
+        urgent,
+        startAt: dateValue(startAt),
+        dueAt: dateValue(dueAt),
+        progress,
+        estimatedMinutes: estimatedValue,
       });
-  }, [detailQuery.data, task]);
+      if (status !== task.status) await taskAPI.setStatus(task.id, status);
+      await featureAPI.updateDescription({ id: task.id, ...description });
+      lastSavedSignatureRef.current = signature;
+      setDetailNotice("已自动保存");
+      await queryClient.invalidateQueries({ queryKey: ["selected-task", task.id] });
+    } catch (error) {
+      setDetailNotice(`自动保存失败：${errorMessage(error)}`);
+    }
+  };
+
+  useEffect(() => {
+    if (!task || hydratingRef.current || draftSignature === lastSavedSignatureRef.current) return;
+    setDetailNotice("等待自动保存…");
+    const timer = window.setTimeout(() => void persistDraft(draftSignature), 500);
+    return () => window.clearTimeout(timer);
+  }, [draftSignature, task?.id]);
+
+  useEffect(() => {
+    const requestClose = () => void persistDraft().finally(onClose);
+    window.addEventListener("yi-todo:request-close-detail", requestClose);
+    return () => window.removeEventListener("yi-todo:request-close-detail", requestClose);
+  }, [draftSignature, task?.id]);
 
   if (!task) return null;
 
@@ -168,39 +276,44 @@ export function TaskDetailPanel({
     }
   };
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    const trimmed = title.trim();
+  const createSubtask = async () => {
+    const trimmed = subtaskTitle.trim();
     if (!trimmed) return;
     try {
-      if (trimmed !== task.title) await onSave(task.id, trimmed);
-      await onMetadata({
-        id: task.id,
-        projectId,
-        priority,
-        important,
-        urgent,
-        startAt: dateValue(startAt),
-        dueAt: dateValue(dueAt),
-        progress,
-        estimatedMinutes:
-          estimatedMinutes === ""
-            ? null
-            : Math.round(
-                Number(estimatedMinutes) *
-                  (estimatedUnit === "minute"
-                    ? 1
-                    : estimatedUnit === "hour"
-                      ? 60
-                      : 1440),
-              ),
+      await taskAPI.create({
+        title: trimmed,
+        projectId: task.projectId,
+        parentId: task.id,
       });
-      if (status !== task.status) await taskAPI.setStatus(task.id, status);
-      await featureAPI.updateDescription({ id: task.id, ...description });
-      await queryClient.invalidateQueries({ queryKey: ["task", task.id] });
-      setDetailNotice("已保存");
+      setSubtaskTitle("");
+      await subtasksQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      setDetailNotice("");
     } catch (error) {
       setDetailNotice(errorMessage(error));
+    }
+  };
+
+  const toggleSubtask = async (item: TaskListItem, nextChecked: boolean) => {
+    const currentlyCompleted = item.status === TaskStatus.TaskStatusCompleted;
+    if (nextChecked === currentlyCompleted || togglingSubtasks.has(item.id)) return;
+    setTogglingSubtasks((current) => new Set(current).add(item.id));
+    try {
+      await onToggle(item);
+      setDetailNotice("");
+    } catch (error) {
+      setDetailNotice(errorMessage(error));
+    } finally {
+      await Promise.all([
+        subtasksQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: ["selected-task", task.id] }),
+        queryClient.invalidateQueries({ queryKey: ["task-parent"] }),
+      ]);
+      setTogglingSubtasks((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
   };
 
@@ -234,7 +347,7 @@ export function TaskDetailPanel({
           size="sm"
           className="h-8 px-3 font-semibold shadow-sm"
           disabled={pending}
-          onClick={() => onToggle(task)}
+          onClick={() => void onToggle(task)}
         >
           <CheckCircle2 />
           {completed ? zhCN.reopen : "标记为完成"}
@@ -254,14 +367,14 @@ export function TaskDetailPanel({
             type="button"
             variant="ghost"
             size="icon-sm"
-            onClick={onClose}
+            onClick={() => void persistDraft().finally(onClose)}
             aria-label={zhCN.close}
           >
             <X />
           </Button>
         </div>
       </header>
-      <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="px-4 pb-3 pt-4">
             <Textarea
@@ -276,10 +389,20 @@ export function TaskDetailPanel({
               }}
               rows={1}
               maxLength={500}
-              autoFocus
               className="max-h-[72px] min-h-6 resize-none overflow-y-auto border-0 p-0 text-lg font-semibold leading-6 shadow-none focus-visible:ring-0"
               aria-label={zhCN.title}
             />
+            {parentQuery.data && (
+              <button
+                type="button"
+                className="mt-2 flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => void persistDraft().finally(() => onNavigate(parentQuery.data!.id))}
+              >
+                <ChevronRight className="size-3 rotate-180" />
+                <span className="shrink-0">父任务</span>
+                <span className="truncate font-medium text-foreground">{parentQuery.data.title}</span>
+              </button>
+            )}
           </div>
           <div className="border-y px-4 py-2">
             <div className="detail-property-row">
@@ -301,22 +424,28 @@ export function TaskDetailPanel({
                 <CalendarDays />
                 日期
               </span>
-              <div className="flex min-w-0 flex-1 items-center gap-1">
-                <Input
-                  aria-label="开始日期"
-                  type="datetime-local"
-                  value={startAt}
-                  onChange={(event) => setStartAt(event.target.value)}
-                  className="h-7 border-0 px-2 shadow-none"
-                />
-                <span className="text-muted-foreground">–</span>
-                <Input
-                  aria-label="截止日期"
-                  type="datetime-local"
-                  value={dueAt}
-                  onChange={(event) => setDueAt(event.target.value)}
-                  className="h-7 border-0 px-2 shadow-none"
-                />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1">
+                  <Input
+                    aria-label="开始日期"
+                    type="datetime-local"
+                    value={startAt}
+                    onChange={(event) => setStartAt(event.target.value)}
+                    className="h-7 border-0 px-2 shadow-none"
+                  />
+                  <span className="text-muted-foreground">–</span>
+                  <Input
+                    aria-label="截止日期"
+                    type="datetime-local"
+                    value={dueAt}
+                    onChange={(event) => setDueAt(event.target.value)}
+                    className="h-7 border-0 px-2 shadow-none"
+                  />
+                </div>
+                <div className="mt-0.5 flex justify-end gap-1">
+                  <Button type="button" variant="ghost" size="xs" onClick={() => { const schedule = todaySchedule(); setStartAt(schedule.start); setDueAt(schedule.due); }}>今天</Button>
+                  {(startAt || dueAt) && <Button type="button" variant="ghost" size="xs" className="text-muted-foreground" onClick={() => { setStartAt(""); setDueAt(""); }}>清空</Button>}
+                </div>
               </div>
             </div>
             <div className="detail-property-row">
@@ -559,28 +688,46 @@ export function TaskDetailPanel({
                 </span>
               </div>
               {(subtasksQuery.data ?? []).map((item) => (
-                <button
-                  type="button"
+                <div
                   key={item.id}
                   className="hover:bg-accent flex h-8 w-full items-center gap-2 rounded-md px-1.5 text-left text-xs"
-                  onClick={() => onToggle(item)}
                 >
-                  <Checkbox checked={item.status === "completed"} />
-                  <span
-                    className={
-                      item.status === "completed"
-                        ? "text-muted-foreground line-through"
-                        : ""
-                    }
+                  <Checkbox
+                    checked={item.status === "completed"}
+                    disabled={togglingSubtasks.has(item.id)}
+                    onCheckedChange={(checked) => {
+                      if (typeof checked === "boolean")
+                        void toggleSubtask(item, checked);
+                    }}
+                    aria-label={item.status === "completed" ? `重新打开 ${item.title}` : `完成 ${item.title}`}
+                  />
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 truncate text-left"
+                    onClick={() => void persistDraft().finally(() => onNavigate(item.id))}
                   >
-                    {item.title}
-                  </span>
-                </button>
+                    <span
+                      className={
+                        item.status === "completed"
+                          ? "text-muted-foreground line-through"
+                          : ""
+                      }
+                    >
+                      {item.title}
+                    </span>
+                  </button>
+                </div>
               ))}
               <div className="flex gap-1">
                 <Input
                   value={subtaskTitle}
                   onChange={(event) => setSubtaskTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      void createSubtask();
+                    }
+                  }}
                   placeholder="添加子任务"
                   className="h-7 border-0 px-1.5 shadow-none"
                 />
@@ -589,18 +736,7 @@ export function TaskDetailPanel({
                   variant="ghost"
                   size="icon-sm"
                   disabled={!subtaskTitle.trim()}
-                  onClick={async () => {
-                    await taskAPI.create({
-                      title: subtaskTitle.trim(),
-                      projectId: task.projectId,
-                      parentId: task.id,
-                    });
-                    setSubtaskTitle("");
-                    await subtasksQuery.refetch();
-                    await queryClient.invalidateQueries({
-                      queryKey: ["tasks"],
-                    });
-                  }}
+                  onClick={() => void createSubtask()}
                 >
                   <Plus />
                 </Button>
@@ -690,15 +826,8 @@ export function TaskDetailPanel({
           <span className="text-muted-foreground mr-auto text-[10px]">
             更改仅保存在本机
           </span>
-          <Button
-            type="submit"
-            size="sm"
-            disabled={pending || detailQuery.isPending}
-          >
-            {zhCN.save}
-          </Button>
         </footer>
-      </form>
+      </div>
       {attachmentPreview && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-8"

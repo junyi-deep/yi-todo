@@ -9,6 +9,7 @@ import { useUIStore } from "../stores/uiStore";
 import { CompactTodoView } from "../features/tasks/CompactTodoView";
 import { PomodoroMode } from "../features/pomodoro/FocusPage";
 import { cn } from "@/lib/utils";
+import { AppExitDialog } from "../components/layout/AppExitDialog";
 
 export function App() {
   const mode = useUIStore((state) => state.windowMode);
@@ -36,6 +37,7 @@ export function App() {
         <SearchPalette />
         <NotificationBridge />
         <ThemeController />
+        <AppExitDialog />
       </div>
     </TooltipProvider>
   );

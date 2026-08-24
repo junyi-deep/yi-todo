@@ -131,6 +131,16 @@ tasks:
   create:app:bundle:
     summary: Creates an `.app` bundle
     cmds:
+      - |
+        embedded_data="{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/.yi-todo"
+        if [ -d "$embedded_data" ]; then
+          recovery="{{.BIN_DIR}}/.yi-todo-recovered-from-app-bundle"
+          if [ -e "$recovery" ]; then
+            recovery="${recovery}-$(date +%Y%m%d%H%M%S)"
+          fi
+          mv "$embedded_data" "$recovery"
+          echo "Preserved embedded app data at $recovery"
+        fi
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"

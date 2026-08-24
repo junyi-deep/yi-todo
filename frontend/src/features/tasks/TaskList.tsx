@@ -21,7 +21,14 @@ type Props = {
 
 type FlatRow =
   | { kind: "task"; task: TaskListItem; depth: number }
-  | { kind: "add"; parent: TaskListItem; depth: number };
+  | { kind: "add"; target: QuickAddTarget; depth: number };
+
+type QuickAddTarget = {
+  anchorId: string;
+  parentId: string | null;
+  projectId: string | null;
+  kind: "sibling" | "child";
+};
 
 export function TaskList({
   tasks,
@@ -45,7 +52,7 @@ export function TaskList({
     new Set(),
   );
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [adding, setAdding] = useState<string | null>(null);
+  const [adding, setAdding] = useState<QuickAddTarget | null>(null);
   const [title, setTitle] = useState("");
 
   const mergedTasks = useMemo(() => {
@@ -69,8 +76,12 @@ export function TaskList({
     const result: FlatRow[] = [];
     const visit = (task: TaskListItem, depth: number) => {
       result.push({ kind: "task", task, depth });
-      if (adding === task.id)
-        result.push({ kind: "add", parent: task, depth: depth + 1 });
+      if (adding?.anchorId === task.id)
+        result.push({
+          kind: "add",
+          target: adding,
+          depth: adding.kind === "child" ? depth + 1 : depth,
+        });
       if (expanded.has(task.id))
         for (const child of children.get(task.id) ?? [])
           visit(child, depth + 1);
@@ -80,6 +91,37 @@ export function TaskList({
       if (!task.parentId || !ids.has(task.parentId)) visit(task, 0);
     return result;
   }, [adding, children, expanded, mergedTasks]);
+
+  useEffect(() => {
+    const handleQuickCreate = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || !selectedTaskId || busy) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest('input, textarea, button, select, [contenteditable="true"], [role="menu"]') &&
+        !target.closest("[data-task-select]")
+      )
+        return;
+      const selectedRow = flat.find(
+        (row): row is Extract<FlatRow, { kind: "task" }> =>
+          row.kind === "task" && row.task.id === selectedTaskId,
+      );
+      if (!selectedRow || (event.shiftKey && selectedRow.depth >= 5)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const child = event.shiftKey;
+      setAdding({
+        anchorId: selectedRow.task.id,
+        parentId: child ? selectedRow.task.id : selectedRow.task.parentId,
+        projectId: selectedRow.task.projectId,
+        kind: child ? "child" : "sibling",
+      });
+      setTitle("");
+      if (child)
+        setExpanded((current) => new Set(current).add(selectedRow.task.id));
+    };
+    window.addEventListener("keydown", handleQuickCreate, true);
+    return () => window.removeEventListener("keydown", handleQuickCreate, true);
+  }, [busy, flat, selectedTaskId]);
 
   const virtualizer = useVirtualizer({
     count: flat.length,
@@ -130,18 +172,20 @@ export function TaskList({
     }
   };
 
-  const add = async (parent: TaskListItem) => {
+  const add = async (target: QuickAddTarget) => {
     if (!title.trim()) return;
     try {
       const created = await taskAPI.create({
         title: title.trim(),
-        projectId: parent.projectId,
-        parentId: parent.id,
+        projectId: target.projectId,
+        parentId: target.parentId,
       });
       setSupplemental((current) => new Map(current).set(created.id, created));
       setTitle("");
       setAdding(null);
-      setExpanded((current) => new Set(current).add(parent.id));
+      if (target.parentId)
+        setExpanded((current) => new Set(current).add(target.parentId!));
+      onSelect(created.id);
       setLoadError(null);
       await Promise.all([
         client.invalidateQueries({ queryKey: ["tasks"] }),
@@ -180,7 +224,7 @@ export function TaskList({
           const row = flat[virtualRow.index];
           return (
             <div
-              key={row.kind === "task" ? row.task.id : `add-${row.parent.id}`}
+              key={row.kind === "task" ? row.task.id : `add-${row.target.anchorId}-${row.target.kind}`}
               ref={virtualizer.measureElement}
               data-index={virtualRow.index}
               className="absolute left-0 top-0 w-full"
@@ -209,7 +253,12 @@ export function TaskList({
                   }}
                   onExpand={() => void expand(row.task)}
                   onAdd={() => {
-                    setAdding(row.task.id);
+                    setAdding({
+                      anchorId: row.task.id,
+                      parentId: row.task.id,
+                      projectId: row.task.projectId,
+                      kind: "child",
+                    });
                     setTitle("");
                   }}
                 />
@@ -219,7 +268,7 @@ export function TaskList({
                   style={{ paddingLeft: 48 + Math.min(row.depth, 5) * 18 }}
                   onSubmit={(event) => {
                     event.preventDefault();
-                    void add(row.parent);
+                    void add(row.target);
                   }}
                 >
                   <span className="text-muted-foreground">↳</span>
@@ -228,7 +277,7 @@ export function TaskList({
                     value={title}
                     onChange={(event) => setTitle(event.target.value)}
                     onBlur={() => !title && setAdding(null)}
-                    placeholder="添加子任务，回车保存"
+                    placeholder={row.target.kind === "child" ? "添加子任务，回车创建" : "添加同级任务，回车创建"}
                     className="h-8 min-w-0 flex-1 bg-transparent text-xs outline-none"
                   />
                 </form>

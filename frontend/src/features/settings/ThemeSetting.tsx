@@ -1,7 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Check, Monitor, Moon, Sun } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { featureAPI } from "../tasks/api";
 
 export type AppTheme = "system" | "light" | "dark";
@@ -47,6 +49,8 @@ export function ThemeController() {
 }
 
 export function ThemeToggle() {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const query = useThemeSetting();
   const theme = query.data ?? "system";
@@ -56,9 +60,27 @@ export function ThemeToggle() {
       return next;
     },
     onMutate: (next) => applyTheme(next),
-    onSuccess: (next) => queryClient.setQueryData(themeKey, next),
+    onSuccess: (next) => {
+      queryClient.setQueryData(themeKey, next);
+      setOpen(false);
+    },
     onError: () => applyTheme(theme),
   });
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
   const label =
     theme === "system"
       ? "跟随系统"
@@ -66,24 +88,55 @@ export function ThemeToggle() {
         ? "浅色主题"
         : "深色主题";
   const Icon = theme === "system" ? Monitor : theme === "light" ? Sun : Moon;
+  const options: Array<{ value: AppTheme; label: string; icon: typeof Monitor }> = [
+    { value: "system", label: "跟随系统", icon: Monitor },
+    { value: "light", label: "浅色主题", icon: Sun },
+    { value: "dark", label: "深色主题", icon: Moon },
+  ];
   return (
-    <label
-      className="app-no-drag hover:bg-accent hover:text-accent-foreground relative grid size-8 place-items-center rounded-md"
-      title={`主题：${label}`}
-      aria-label="选择主题"
-    >
-      <Icon className="size-4" />
-      <select
-        className="absolute inset-0 cursor-pointer opacity-0"
-        value={theme}
+    <div ref={rootRef} className="app-no-drag relative">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
         disabled={update.isPending}
-        onChange={(event) => update.mutate(event.target.value as AppTheme)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`主题：${label}`}
         aria-label="选择主题"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
       >
-        <option value="system">跟随系统</option>
-        <option value="light">浅色</option>
-        <option value="dark">深色</option>
-      </select>
-    </label>
+        <Icon className="size-4" />
+      </Button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="选择主题"
+          className="app-no-drag absolute right-0 top-full z-[100] mt-1 w-36 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
+        >
+          {options.map(({ value, label: optionLabel, icon: OptionIcon }) => (
+            <button
+              key={value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={theme === value}
+              className={cn(
+                "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent",
+                theme === value && "bg-accent/60",
+              )}
+              onClick={() => update.mutate(value)}
+            >
+              <OptionIcon className="size-4" />
+              <span>{optionLabel}</span>
+              {theme === value && <Check className="ml-auto size-4" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
