@@ -15,6 +15,8 @@ import type {
   UpdateTaskInput,
   UpdateTaskMetadataInput,
   UpdateDescriptionInput,
+  UpdateCategoryInput,
+  UpdateProjectInput,
 } from "../../../bindings/github.com/junyiwu/yi-todo/internal/service";
 import type {
   Attachment,
@@ -222,6 +224,8 @@ export const projectAPI = {
     (await ProjectService.ListProjects()) ?? [],
   create: async (name: string, color: string | null, categoryId: string): Promise<Project> =>
     ProjectService.CreateProject({ name, color, categoryId } satisfies CreateProjectInput),
+  update: async (id: string, name: string, categoryId: string): Promise<Project> =>
+    ProjectService.UpdateProject({ id, name, categoryId } satisfies UpdateProjectInput),
   archive: async (id: string): Promise<void> =>
     ProjectService.ArchiveProject(id),
   delete: async (id: string): Promise<void> => ProjectService.DeleteProject(id),
@@ -229,6 +233,8 @@ export const projectAPI = {
     (await ProjectService.ListCategories()) ?? [],
   createCategory: (name: string, parentId: string | null): Promise<Category> =>
     ProjectService.CreateCategory({ name, parentId }),
+  updateCategory: (id: string, name: string, parentId: string | null): Promise<Category> =>
+    ProjectService.UpdateCategory({ id, name, parentId } satisfies UpdateCategoryInput),
   deleteCategory: (id: string): Promise<void> => ProjectService.DeleteCategory(id),
 };
 

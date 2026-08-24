@@ -11,7 +11,7 @@ info:
   description: "Local-first desktop task manager"
   copyright: "Copyright 2026 yi-todo"
   comments: "yi-todo desktop application"
-  version: "0.0.3"
+  version: "0.0.5"
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
   #                               # If not set and Assets.car exists, defaults to "appicon"

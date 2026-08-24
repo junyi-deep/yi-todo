@@ -108,6 +108,102 @@ func TestDeleteProjectMovesTasksToCollectionBox(t *testing.T) {
 	}
 }
 
+func TestProjectAndCategoryCanBeRenamedAndMoved(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "project-update.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	projects := NewProjectService(dbsqlite.NewProjectRepository(db))
+	root, err := projects.CreateCategory(CreateCategoryInput{Name: "工作"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := projects.CreateCategory(CreateCategoryInput{Name: "项目", ParentID: &root.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := projects.CreateProject(CreateProjectInput{Name: "迭代", CategoryID: root.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.UpdateCategory(UpdateCategoryInput{ID: root.ID, Name: root.Name, ParentID: &child.ID}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("moving category into descendant error = %v, want conflict", err)
+	}
+	updatedCategory, err := projects.UpdateCategory(UpdateCategoryInput{ID: child.ID, Name: "产品项目", ParentID: nil})
+	if err != nil || updatedCategory.Name != "产品项目" || updatedCategory.ParentID != nil {
+		t.Fatalf("UpdateCategory() = %+v, %v", updatedCategory, err)
+	}
+	updatedProject, err := projects.UpdateProject(UpdateProjectInput{ID: project.ID, Name: "版本迭代", CategoryID: child.ID})
+	if err != nil || updatedProject.Name != "版本迭代" || updatedProject.CategoryID != child.ID {
+		t.Fatalf("UpdateProject() = %+v, %v", updatedProject, err)
+	}
+	if _, err := projects.UpdateCategory(UpdateCategoryInput{ID: child.ID, Name: child.Name, ParentID: &child.ID}); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("moving category into itself error = %v, want validation", err)
+	}
+}
+
+func TestDeleteNonEmptyCategoryTreeKeepsTasks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "category-tree-delete.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	projects := NewProjectService(dbsqlite.NewProjectRepository(db))
+	tasks := NewTaskService(dbsqlite.NewTaskRepository(db))
+	root, err := projects.CreateCategory(CreateCategoryInput{Name: "待删除分类"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := projects.CreateCategory(CreateCategoryInput{Name: "子分类", ParentID: &root.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := projects.CreateProject(CreateProjectInput{Name: "非空清单", CategoryID: child.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := tasks.CreateTask(CreateTaskInput{Title: "必须保留", ProjectID: &project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.DeleteCategory(root.ID); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := tasks.GetTask(task.ID)
+	if err != nil || kept.ProjectID != nil {
+		t.Fatalf("task after category tree deletion = %+v, %v", kept, err)
+	}
+	categories, err := projects.ListCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, category := range categories {
+		if category.ID == root.ID || category.ID == child.ID {
+			t.Fatalf("deleted category remained: %+v", category)
+		}
+	}
+	listedProjects, err := projects.ListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range listedProjects {
+		if listed.ID == project.ID {
+			t.Fatalf("deleted project remained: %+v", listed)
+		}
+	}
+}
+
 func TestTaskDefaultsUseLocalDayAndChildInheritsScheduling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -29,6 +29,18 @@ type CreateCategoryInput struct {
 	ParentID *string `json:"parentId"`
 }
 
+type UpdateProjectInput struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	CategoryID string `json:"categoryId"`
+}
+
+type UpdateCategoryInput struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	ParentID *string `json:"parentId"`
+}
+
 func NewProjectService(repository repository.ProjectRepository) *ProjectService {
 	return &ProjectService{repository: repository, ctx: context.Background(), now: time.Now}
 }
@@ -56,6 +68,21 @@ func (s *ProjectService) CreateProject(input CreateProjectInput) (domain.Project
 
 func (s *ProjectService) ListProjects() ([]domain.Project, error) {
 	return s.repository.List(s.ctx)
+}
+
+func (s *ProjectService) UpdateProject(input UpdateProjectInput) (domain.Project, error) {
+	name := strings.TrimSpace(input.Name)
+	if strings.TrimSpace(input.ID) == "" {
+		return domain.Project{}, fmt.Errorf("%w: project id is required", domain.ErrValidation)
+	}
+	if name == "" || len([]rune(name)) > 100 {
+		return domain.Project{}, fmt.Errorf("%w: project name must be 1-100 characters", domain.ErrValidation)
+	}
+	if strings.TrimSpace(input.CategoryID) == "" {
+		return domain.Project{}, fmt.Errorf("%w: category is required", domain.ErrValidation)
+	}
+	now := s.now().UTC()
+	return s.repository.Update(s.ctx, input.ID, name, input.CategoryID, float64(now.UnixMilli()), now)
 }
 
 func (s *ProjectService) ArchiveProject(id string) error {
@@ -89,6 +116,28 @@ func (s *ProjectService) CreateCategory(input CreateCategoryInput) (domain.Categ
 
 func (s *ProjectService) ListCategories() ([]domain.Category, error) {
 	return s.repository.ListCategories(s.ctx)
+}
+
+func (s *ProjectService) UpdateCategory(input UpdateCategoryInput) (domain.Category, error) {
+	name := strings.TrimSpace(input.Name)
+	if strings.TrimSpace(input.ID) == "" {
+		return domain.Category{}, fmt.Errorf("%w: category id is required", domain.ErrValidation)
+	}
+	if name == "" || len([]rune(name)) > 100 {
+		return domain.Category{}, fmt.Errorf("%w: category name must be 1-100 characters", domain.ErrValidation)
+	}
+	if input.ParentID != nil {
+		parentID := strings.TrimSpace(*input.ParentID)
+		if parentID == "" {
+			input.ParentID = nil
+		} else if parentID == input.ID {
+			return domain.Category{}, fmt.Errorf("%w: category cannot be its own parent", domain.ErrValidation)
+		} else {
+			input.ParentID = &parentID
+		}
+	}
+	now := s.now().UTC()
+	return s.repository.UpdateCategory(s.ctx, input.ID, name, input.ParentID, float64(now.UnixMilli()), now)
 }
 
 func (s *ProjectService) DeleteCategory(id string) error {

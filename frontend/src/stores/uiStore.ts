@@ -1,5 +1,15 @@
 import { create } from "zustand";
 
+const DEFAULT_SIDEBAR_WIDTH = 224;
+
+function initialSidebarWidth() {
+  if (typeof window === "undefined") return DEFAULT_SIDEBAR_WIDTH;
+  const stored = window.localStorage.getItem("yi-todo.sidebar-width");
+  if (stored === null) return DEFAULT_SIDEBAR_WIDTH;
+  const saved = Number(stored);
+  return Number.isFinite(saved) ? Math.min(420, Math.max(200, saved)) : DEFAULT_SIDEBAR_WIDTH;
+}
+
 export type TaskView =
   | "inbox"
   | "today"
@@ -20,6 +30,7 @@ type UIState = {
   workspacePage: "tasks" | "settings" | "focus";
   windowMode: "normal" | "todo" | "pomodoro";
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   activeView: TaskView;
   workspaceMode: WorkspaceMode;
   selectedProjectId: string | null;
@@ -34,6 +45,7 @@ type UIState = {
   openFocus: () => void;
   setWindowMode: (mode: "normal" | "todo" | "pomodoro") => void;
   toggleSidebar: () => void;
+  setSidebarWidth: (width: number) => void;
 };
 
 export const useUIStore = create<UIState>((set) => ({
@@ -41,6 +53,7 @@ export const useUIStore = create<UIState>((set) => ({
   workspacePage: "tasks",
   windowMode: "normal",
   sidebarCollapsed: false,
+  sidebarWidth: initialSidebarWidth(),
   workspaceMode: "list",
   selectedProjectId: null,
   selectedCategoryId: null,
@@ -76,4 +89,9 @@ export const useUIStore = create<UIState>((set) => ({
   setWindowMode: (windowMode) => set({ windowMode }),
   toggleSidebar: () =>
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  setSidebarWidth: (width) => {
+    const sidebarWidth = Math.min(420, Math.max(200, Math.round(width)));
+    window.localStorage.setItem("yi-todo.sidebar-width", String(sidebarWidth));
+    set({ sidebarWidth });
+  },
 }));
