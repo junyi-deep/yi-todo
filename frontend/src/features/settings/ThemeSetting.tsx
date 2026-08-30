@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { System, Window } from "@wailsio/runtime";
 import { Check, Monitor, Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -12,12 +13,19 @@ const themeKey = ["setting", "appearance.theme"] as const;
 
 export function applyTheme(theme: AppTheme) {
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = theme === "dark" || (theme === "system" && systemDark);
   document.documentElement.classList.toggle(
     "dark",
-    theme === "dark" || (theme === "system" && systemDark),
+    dark,
   );
   document.documentElement.style.colorScheme =
     theme === "system" ? "light dark" : theme;
+  if (System.IsWindows()) {
+    const channel = dark ? 23 : 255;
+    void Window.SetBackgroundColour(channel, channel, channel, 255).catch(
+      () => undefined,
+    );
+  }
 }
 
 function normalizeTheme(value: string | undefined): AppTheme {

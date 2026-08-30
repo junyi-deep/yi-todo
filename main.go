@@ -111,6 +111,7 @@ func run() error {
 		},
 	})
 
+	backgroundType, backgroundColour := windowBackground(runtime.GOOS)
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "yi-todo",
@@ -119,9 +120,9 @@ func run() error {
 		MinWidth:         900,
 		MinHeight:        600,
 		Frameless:        true,
-		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundType:   backgroundType,
 		InitialPosition:  application.WindowCentered,
-		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+		BackgroundColour: backgroundColour,
 		URL:              "/",
 	})
 	tray := app.SystemTray.New()
@@ -197,6 +198,15 @@ func run() error {
 		return fmt.Errorf("run Wails application: %w", err)
 	}
 	return nil
+}
+
+func windowBackground(goos string) (application.BackgroundType, application.RGBA) {
+	if goos == "windows" {
+		// An opaque WebView2 host prevents unsupported/failed CSS backgrounds
+		// from exposing the Windows compositor's accent colour.
+		return application.BackgroundTypeSolid, application.NewRGB(255, 255, 255)
+	}
+	return application.BackgroundTypeTransparent, application.NewRGBA(0, 0, 0, 0)
 }
 
 func applicationContext() context.Context {
